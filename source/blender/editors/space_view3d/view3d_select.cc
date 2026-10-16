@@ -94,6 +94,15 @@
 
 #include "view3d_intern.hh" /* own include */
 
+/* WEB (WebGPU) build: GPU select-ID / depth buffers cannot be read back synchronously yet
+ * (no JSPI), so zbuf-based selection would always read zeros and select nothing. Fall back to
+ * the geometric ("X-Ray") nearest search until async readback lands (docs/STATUS.md). */
+#ifdef __EMSCRIPTEN__
+#  define SELECT_USE_ZBUF(v3d) (false)
+#else
+#  define SELECT_USE_ZBUF(v3d) (!XRAY_FLAG_ENABLED(v3d))
+#endif
+
 // #include "BLI_time_utildefines.hh"
 
 namespace blender {
@@ -854,7 +863,7 @@ static bool do_lasso_select_mesh(const ViewContext *vc,
 
   GPU_matrix_set(vc->rv3d->viewmat);
 
-  const bool use_zbuf = !XRAY_FLAG_ENABLED(vc->v3d);
+  const bool use_zbuf = SELECT_USE_ZBUF(vc->v3d);
 
   EditSelectBuf_Cache *esel = static_cast<EditSelectBuf_Cache *>(wm_userdata->data);
   if (use_zbuf) {
@@ -4087,7 +4096,7 @@ static bool do_mesh_box_select(const ViewContext *vc,
 
   GPU_matrix_set(vc->rv3d->viewmat);
 
-  const bool use_zbuf = !XRAY_FLAG_ENABLED(vc->v3d);
+  const bool use_zbuf = SELECT_USE_ZBUF(vc->v3d);
 
   EditSelectBuf_Cache *esel = static_cast<EditSelectBuf_Cache *>(wm_userdata->data);
   if (use_zbuf) {
@@ -4824,7 +4833,7 @@ static bool mesh_circle_select(const ViewContext *vc,
 
   view3d_userdata_circleselect_init(&data, vc, select, mval, rad);
 
-  const bool use_zbuf = !XRAY_FLAG_ENABLED(vc->v3d);
+  const bool use_zbuf = SELECT_USE_ZBUF(vc->v3d);
 
   if (use_zbuf) {
     if (wm_userdata->data == nullptr) {
