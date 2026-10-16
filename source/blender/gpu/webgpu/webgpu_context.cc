@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 
 #include "BLI_math_half.hh"
 #include <string>
@@ -19,6 +20,9 @@
 #ifdef __EMSCRIPTEN__
 #  include <emscripten/emscripten.h>
 #endif
+
+#include <emscripten/emscripten.h>
+#include <emscripten/eventloop.h>
 
 #include "GPU_framebuffer.hh"
 #include "GPU_texture.hh"
@@ -75,6 +79,7 @@ static std::vector<WebGPUContext *> g_all_contexts;
 
 void WebGPUContext::scrub_texture_all_contexts(WebGPUTexture *tex)
 {
+  wgpu_depth_snapshot_forget(tex);
   for (WebGPUContext *ctx : g_all_contexts) {
     ctx->scrub_texture(tex);
   }
@@ -798,6 +803,212 @@ void WebGPUContext::film_capture_async(WGPUTexture tex, WGPUTextureFormat fmt, i
   wgpuBufferMapAsync(map_buf, WGPUMapMode_Read, 0, size, cb);
 }
 
+/* -------------------------------------------------------------------- */
+/** \name Viewport depth snapshot
+ *
+ * The 3D cursor (and auto-depth navigation) render a depth pass and immediately read it back
+ * with GPU_framebuffer_read_depth(). A synchronous read is impossible without JSPI, so instead
+ * we keep an asynchronously refreshed CPU copy of the viewport depth texture ("dtxl_depth"),
+ * taken once the viewport has been idle for a moment (never while orbiting), and serve
+ * read() from it. The pick's own depth pass only marks the texture "written"; the snapshot is
+ * only invalidated at the next present, so the click still sees the pre-click (idle) copy.
+ * \{ */
+
+namespace {
+struct DepthSnap {
+  std::vector<float> depth;
+  int w = 0, h = 0;
+  bool valid = false;   /* `depth` holds a copy. */
+  bool stale = false;   /* Texture changed since the copy was taken. */
+  bool written = false; /* Rendered to since the last present. */
+  bool pending = false; /* Copy in flight. */
+  bool redirty = false; /* Changed again while the copy was in flight. */
+  uint32_t serial = 0;
+};
+std::unordered_map<const WebGPUTexture *, DepthSnap> g_depth_snaps;
+uint32_t g_depth_serial = 0;
+bool g_depth_timer_armed = false;
+double g_depth_dirty_ms = 0.0;
+constexpr double DEPTH_IDLE_MS = 120.0;
+}  // namespace
+
+void wgpu_depth_snapshot_note_written(const WebGPUTexture *tex)
+{
+  auto it = g_depth_snaps.find(tex);
+  if (it == g_depth_snaps.end()) {
+    if (tex->width_get() < 256 || tex->debug_name() != "dtxl_depth") {
+      return;
+    }
+    it = g_depth_snaps.emplace(tex, DepthSnap()).first;
+  }
+  it->second.written = true;
+}
+
+void wgpu_depth_snapshot_forget(const WebGPUTexture *tex)
+{
+  g_depth_snaps.erase(tex);
+}
+
+bool wgpu_depth_snapshot_read(const WebGPUTexture *tex, const int area[4], float *r_data)
+{
+  const auto it = g_depth_snaps.find(tex);
+  if (it == g_depth_snaps.end()) {
+    return false;
+  }
+  const DepthSnap &s = it->second;
+  if (!s.valid || s.stale || s.w != tex->width_get() || s.h != tex->height_get()) {
+    return false;
+  }
+  for (int y = 0; y < area[3]; y++) {
+    for (int x = 0; x < area[2]; x++) {
+      const int sx = area[0] + x, sy = area[1] + y;
+      r_data[size_t(y) * area[2] + x] = (sx >= 0 && sy >= 0 && sx < s.w && sy < s.h) ?
+                                            s.depth[size_t(sy) * s.w + sx] :
+                                            1.0f;
+    }
+  }
+  return true;
+}
+
+static void depth_timer_cb(void *ud)
+{
+  WebGPUContext *ctx = static_cast<WebGPUContext *>(ud);
+  g_depth_timer_armed = false;
+  for (WebGPUContext *c : g_all_contexts) {
+    if (c == ctx) {
+      ctx->depth_snapshot_capture();
+      return;
+    }
+  }
+}
+
+void WebGPUContext::depth_snapshot_tick()
+{
+  bool any = false;
+  for (auto &kv : g_depth_snaps) {
+    DepthSnap &s = kv.second;
+    if (s.written) {
+      s.written = false;
+      s.stale = true;
+      s.redirty = true;
+      any = true;
+    }
+  }
+  if (!any) {
+    return;
+  }
+  g_depth_dirty_ms = emscripten_get_now();
+  if (!g_depth_timer_armed) {
+    g_depth_timer_armed = true;
+    emscripten_set_timeout(depth_timer_cb, DEPTH_IDLE_MS, this);
+  }
+}
+
+void WebGPUContext::depth_snapshot_capture()
+{
+  const double idle = emscripten_get_now() - g_depth_dirty_ms;
+  if (idle < DEPTH_IDLE_MS - 5.0) {
+    /* Viewport redrawn meanwhile: wait for it to settle (re-arm with the remaining time). */
+    g_depth_timer_armed = true;
+    emscripten_set_timeout(depth_timer_cb, DEPTH_IDLE_MS - idle + 5.0, this);
+    return;
+  }
+  if (device_ == nullptr) {
+    return;
+  }
+  for (auto &kv : g_depth_snaps) {
+    DepthSnap &s = kv.second;
+    const WebGPUTexture *tex = kv.first;
+    if (!s.stale || s.pending || tex->wgpu_texture() == nullptr) {
+      continue;
+    }
+    const WGPUTextureFormat fmt = tex->wgpu_format();
+    if (fmt != WGPUTextureFormat_Depth32Float && fmt != WGPUTextureFormat_Depth32FloatStencil8) {
+      continue;
+    }
+    const uint32_t w = uint32_t(tex->width_get()), h = uint32_t(tex->height_get());
+    const uint32_t bpr = align256(w * 4u);
+    const uint64_t size = uint64_t(bpr) * h;
+    WGPUBufferDescriptor md = {};
+    md.label = {"depth_snapshot", WGPU_STRLEN};
+    md.size = size;
+    md.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    WGPUBuffer map_buf = wgpuDeviceCreateBuffer(device_, &md);
+    if (map_buf == nullptr) {
+      continue;
+    }
+    render_pass_end();
+    WGPUCommandEncoder enc = ensure_encoder();
+    if (enc == nullptr) {
+      wgpuBufferRelease(map_buf);
+      continue;
+    }
+    WGPUTexelCopyTextureInfo src = {};
+    src.texture = tex->wgpu_texture();
+    src.aspect = WGPUTextureAspect_DepthOnly;
+    WGPUTexelCopyBufferInfo dst = {};
+    dst.buffer = map_buf;
+    dst.layout.bytesPerRow = bpr;
+    dst.layout.rowsPerImage = h;
+    WGPUExtent3D ext = {w, h, 1};
+    wgpuCommandEncoderCopyTextureToBuffer(enc, &src, &dst, &ext);
+    flush_encoder();
+
+    s.pending = true;
+    s.redirty = false;
+    s.serial = ++g_depth_serial;
+    struct MapCtx {
+      WGPUBuffer buf;
+      const WebGPUTexture *tex;
+      uint32_t serial, w, h, bpr;
+    };
+    MapCtx *mc = new MapCtx{map_buf, tex, s.serial, w, h, bpr};
+    WGPUBufferMapCallbackInfo cb = {};
+    cb.mode = WGPUCallbackMode_AllowSpontaneous;
+    cb.userdata1 = mc;
+    cb.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void *ud1, void *) {
+      MapCtx *mc = static_cast<MapCtx *>(ud1);
+      auto it = g_depth_snaps.find(mc->tex);
+      /* The texture may have been destroyed (and its address reused) meanwhile: serial check. */
+      if (it != g_depth_snaps.end() && it->second.serial == mc->serial) {
+        DepthSnap &s = it->second;
+        s.pending = false;
+        if (status == WGPUMapAsyncStatus_Success) {
+          const uint8_t *raw = static_cast<const uint8_t *>(
+              wgpuBufferGetConstMappedRange(mc->buf, 0, uint64_t(mc->bpr) * mc->h));
+          if (raw) {
+            s.depth.resize(size_t(mc->w) * mc->h);
+            for (uint32_t y = 0; y < mc->h; y++) {
+              std::memcpy(s.depth.data() + size_t(y) * mc->w,
+                          raw + size_t(y) * mc->bpr,
+                          size_t(mc->w) * sizeof(float));
+            }
+            s.w = int(mc->w);
+            s.h = int(mc->h);
+            s.valid = true;
+            s.stale = s.redirty;
+            if (getenv("WGPU_LOG_DEPTH")) {
+              float mn = 1.0f;
+              for (const float v : s.depth) {
+                mn = std::min(mn, v);
+              }
+              fprintf(stderr, "WGPU_DEPTHSNAP ready %ux%u min=%.5f stale=%d\n", mc->w, mc->h, mn,
+                      int(s.stale));
+              fflush(stderr);
+            }
+          }
+          wgpuBufferUnmap(mc->buf);
+        }
+      }
+      wgpuBufferRelease(mc->buf);
+      delete mc;
+    };
+    wgpuBufferMapAsync(map_buf, WGPUMapMode_Read, 0, size, cb);
+  }
+}
+
+/** \} */
+
 bool WebGPUContext::uniform_arena_alloc(uint64_t size, WGPUBuffer &r_buf, uint64_t &r_off)
 {
   if (device_ == nullptr || size == 0) {
@@ -1139,6 +1350,7 @@ void WebGPUContext::present_backbuffer(int w, int h)
   /* No wgpuSurfacePresent on emdawnwebgpu: the browser presents the canvas
    * automatically when this task yields (requestAnimationFrame-driven loop). */
   wgpuTextureRelease(st.texture);
+  depth_snapshot_tick();
 
   /* Perf stats: per-frame submit/pass/bindgroup counts (high submit counts are
    * the #1 slowness cause — each is an emscripten→Dawn→browser round trip). */

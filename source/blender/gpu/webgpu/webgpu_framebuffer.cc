@@ -7,6 +7,8 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "GPU_texture.hh"
 
@@ -275,6 +277,7 @@ WGPURenderPassEncoder WebGPUFrameBuffer::begin_render_pass(WGPUCommandEncoder en
         }
         has_depth = true;
         depth_clear_pending_ = false;
+        wgpu_depth_snapshot_note_written(dt);
       }
     }
   }
@@ -375,6 +378,22 @@ void WebGPUFrameBuffer::read(GPUFrameBufferBits planes,
   const size_t px = size_t(area[2]) * size_t(area[3]) * size_t(std::max(channel_len, 1));
 
   if (planes & GPU_DEPTH_BIT) {
+    /* View3D depth picks (3D cursor, auto-depth) read via a temporary "&depth_read_fb"
+     * framebuffer on the viewport depth texture: serve them from the async CPU snapshot. */
+    if (format == GPU_DATA_FLOAT && depth_tex() != nullptr &&
+        std::strcmp(name_get(), "&depth_read_fb") == 0)
+    {
+      const bool hit = wgpu_depth_snapshot_read(
+          static_cast<const WebGPUTexture *>(depth_tex()), area, static_cast<float *>(r_data));
+      if (getenv("WGPU_LOG_DEPTH")) {
+        fprintf(stderr, "WGPU_DEPTHREAD fb='%s' area=%d,%d %dx%d snapshot=%d\n", name_get(),
+                area[0], area[1], area[2], area[3], int(hit));
+        fflush(stderr);
+      }
+      if (hit) {
+        return;
+      }
+    }
     /* Depth readback is not synchronously available (no JSPI). Return the FAR
      * plane everywhere — a deterministic "nothing here". Anything else (or
      * worse, leaving r_data UNINITIALIZED, as this function used to for

@@ -375,6 +375,12 @@ class WebGPUContext : public Context {
   /* Async self-readback of the film texture (GUI F12): pixels are injected
    * into the RenderResult from the main loop when the map completes. */
   void film_capture_async(WGPUTexture tex, WGPUTextureFormat fmt, int w, int h);
+  /* Viewport depth snapshot (3D cursor / auto-depth picking). Depth cannot be read back
+   * synchronously (no JSPI), so a CPU copy of the viewport depth texture is refreshed
+   * asynchronously after the viewport has been idle; FrameBuffer::read(DEPTH) serves from it.
+   * depth_snapshot_tick() runs once per present; depth_snapshot_capture() from the idle timer. */
+  void depth_snapshot_tick();
+  void depth_snapshot_capture();
   /* --- Occlusion queries (gizmo picking) ---------------------------------
    * WebGPU occlusion results only arrive via an ASYNC buffer map, but
    * QueryPool::get_occlusion_result is synchronous. We return the PREVIOUS
@@ -549,5 +555,10 @@ class WebGPUContext : public Context {
   }
   void compute_pipeline_put(uint64_t key, WGPUComputePipeline p) { compute_pipelines_[key] = p; }
 };
+
+/* Viewport depth snapshot hooks (webgpu_context.cc). */
+void wgpu_depth_snapshot_note_written(const WebGPUTexture *tex);
+void wgpu_depth_snapshot_forget(const WebGPUTexture *tex);
+bool wgpu_depth_snapshot_read(const WebGPUTexture *tex, const int area[4], float *r_data);
 
 }  // namespace blender::gpu
