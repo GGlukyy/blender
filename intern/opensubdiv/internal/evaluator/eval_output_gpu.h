@@ -11,8 +11,13 @@
 #include "internal/evaluator/gpu_compute_evaluator.h"
 #include "internal/evaluator/gpu_patch_table.hh"
 
-#include <opensubdiv/osd/glPatchTable.h>
-#include <opensubdiv/osd/glVertexBuffer.h>
+/* Vestigial desktop-GL OpenSubdiv headers (GpuEvalOutput uses only Blender gpu:: types);
+ * the wasm port builds OpenSubdiv without GL, so skip them there. Same guard as
+ * gessa-ai/blender-web patch 0111 (GPL-2.0-or-later). */
+#if !defined(__EMSCRIPTEN__)
+#  include <opensubdiv/osd/glPatchTable.h>
+#  include <opensubdiv/osd/glVertexBuffer.h>
+#endif
 
 #include "gpu_vertex_buffer_wrapper.hh"
 

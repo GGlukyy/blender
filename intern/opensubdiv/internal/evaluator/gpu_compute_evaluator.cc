@@ -2,7 +2,11 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
-#include <epoxy/gl.h>
+/* Vestigial: this evaluator drives Blender's gpu:: module and references no GL symbol; epoxy is
+ * unavailable in the wasm build (cf. gessa-ai/blender-web patch 0111). */
+#if !defined(__EMSCRIPTEN__)
+#  include <epoxy/gl.h>
+#endif
 
 #include "gpu_compute_evaluator.h"
 
