@@ -47,6 +47,7 @@ void WebGPUIndexBuf::ensure_buffer()
 
 void WebGPUIndexBuf::upload_data()
 {
+  gen_ = webgpu_buffer_gen_next();
   if (is_subrange_) {
     static_cast<WebGPUIndexBuf *>(src_)->upload_data();
     return;
@@ -96,6 +97,7 @@ void WebGPUIndexBuf::read(uint32_t *data) const
 
 void WebGPUIndexBuf::update_sub(uint start, uint len, const void *data)
 {
+  gen_ = webgpu_buffer_gen_next();
   ensure_buffer();
   WebGPUContext *ctx = WebGPUContext::get();
   if (buffer_ && ctx && ctx->queue()) {

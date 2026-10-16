@@ -28,6 +28,7 @@ class WebGPUVertexBuffer : public VertBuf {
  private:
   WGPUBuffer buffer_ = nullptr;
   size_t buffer_size_ = 0;
+  uint64_t gen_ = 0;
 
  public:
   ~WebGPUVertexBuffer() override;
@@ -37,6 +38,16 @@ class WebGPUVertexBuffer : public VertBuf {
   void wrap_handle(uint64_t /*handle*/) override {}
   void update_sub(uint start, uint len, const void *data) override;
   void read(void *data) const override;
+
+  /* CPU shadow + content generation (point-sprite de-indexing cache, webgpu_batch.cc). */
+  const uchar *cpu_data() const
+  {
+    return data_;
+  }
+  uint64_t gen() const
+  {
+    return gen_;
+  }
 
   WGPUBuffer wgpu_buffer()
   {

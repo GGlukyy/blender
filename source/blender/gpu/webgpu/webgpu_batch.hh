@@ -29,6 +29,8 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
 
 class WebGPUBatch : public Batch {
  public:
+  WebGPUBatch() = default;
+  ~WebGPUBatch() override;
   void draw(int vertex_first, int vertex_count, int instance_first, int instance_count) override;
   void draw_indirect(StorageBuf *indirect_buf, intptr_t offset) override
   {
@@ -42,7 +44,13 @@ class WebGPUBatch : public Batch {
     record_draw(0, 0, 0, 1, indirect_buf, count, offset, stride);
   }
 
+  /* De-indexed, 4x replicated copies of the vertex data of indexed point draws (see
+   * record_draw). Cached per batch; rebuilt when the buffers or the draw range change. */
+  struct PointExpand;
+
  private:
+  PointExpand *point_expand_ = nullptr;
+
   /* Shared pipeline/bind-group setup + draw recording. Direct draws pass
    * indirect_buf == nullptr; indirect draws record `indirect_count`
    * (Draw|DrawIndexed)Indirect calls stepping `indirect_stride` bytes from

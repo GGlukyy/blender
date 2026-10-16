@@ -832,6 +832,12 @@ double g_depth_dirty_ms = 0.0;
 constexpr double DEPTH_IDLE_MS = 120.0;
 }  // namespace
 
+uint64_t webgpu_buffer_gen_next()
+{
+  static uint64_t g = 0;
+  return ++g;
+}
+
 void wgpu_depth_snapshot_note_written(const WebGPUTexture *tex)
 {
   auto it = g_depth_snaps.find(tex);

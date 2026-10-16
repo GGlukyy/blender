@@ -22,6 +22,7 @@ class WebGPUIndexBuf : public IndexBuf {
   WGPUBuffer buffer_ = nullptr;
   bool uploaded_ = false;
   size_t buffer_size_ = 0;
+  uint64_t gen_ = 0;
 
  public:
   ~WebGPUIndexBuf() override;
@@ -30,6 +31,24 @@ class WebGPUIndexBuf : public IndexBuf {
   void bind_as_ssbo(uint binding) override;
   void read(uint32_t *data) const override;
   void update_sub(uint start, uint len, const void *data) override;
+
+  /* CPU shadow (null for subranges) + content generation, for point-sprite de-indexing. */
+  const void *cpu_data() const
+  {
+    return is_subrange_ ? nullptr : data_;
+  }
+  bool is_subrange() const
+  {
+    return is_subrange_;
+  }
+  uint32_t index_len_raw() const
+  {
+    return index_len_;
+  }
+  uint64_t gen() const
+  {
+    return gen_;
+  }
 
   WGPUBuffer wgpu_buffer()
   {

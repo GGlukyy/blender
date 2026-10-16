@@ -556,6 +556,9 @@ class WebGPUContext : public Context {
   void compute_pipeline_put(uint64_t key, WGPUComputePipeline p) { compute_pipelines_[key] = p; }
 };
 
+/* Monotonic content-generation counter for vertex/index buffers (cache invalidation). */
+uint64_t webgpu_buffer_gen_next();
+
 /* Viewport depth snapshot hooks (webgpu_context.cc). */
 void wgpu_depth_snapshot_note_written(const WebGPUTexture *tex);
 void wgpu_depth_snapshot_forget(const WebGPUTexture *tex);

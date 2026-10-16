@@ -101,6 +101,7 @@ bool WebGPUVertexBuffer::cow_if_pass_open(WebGPUContext *ctx)
 
 void WebGPUVertexBuffer::upload_data()
 {
+  gen_ = webgpu_buffer_gen_next();
   ensure_buffer();
   WebGPUContext *ctx = WebGPUContext::get();
   if (buffer_ && ctx && ctx->queue() && data_) {
@@ -112,6 +113,7 @@ void WebGPUVertexBuffer::upload_data()
 
 void WebGPUVertexBuffer::update_sub(uint start, uint len, const void *data)
 {
+  gen_ = webgpu_buffer_gen_next();
   if (data_) {
     memcpy(data_ + start, data, len);
   }

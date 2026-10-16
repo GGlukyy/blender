@@ -356,6 +356,83 @@ static void hash_append(uint64_t &h, const void *data, size_t len)
   }
 }
 
+/* -------------------------------------------------------------------- */
+/** \name Indexed point-sprite expansion
+ *
+ * WebGPU points are 1px, so point draws are expanded to quads in the vertex stage. The
+ * non-indexed path uses per-instance vertex stepping, which cannot honour an index buffer —
+ * but edit-mode vertices (overlay_edit_mesh_vert) are drawn indexed. For those we gather the
+ * attributes of the indexed points on the CPU, replicate each point 4x and draw
+ * `[4p, 4p+1, 4p+2, 4p+2, 4p+1, 4p+3]` triangles from a shared quad index buffer: the vertex
+ * index (4p + corner) feeds the unchanged wrapper's corner formula, and instance index /
+ * `instance_first` stay intact (draw resource id). Design: architect, 16. 10. 2026.
+ * \{ */
+
+struct WebGPUBatch::PointExpand {
+  const void *ibo = nullptr;
+  uint64_t ibo_gen = 0;
+  uint32_t first = 0, count = 0, base = 0;
+  std::vector<std::pair<const void *, uint64_t>> vbo_gens;
+  std::vector<WGPUBuffer> bufs; /* One per vertex-buffer layout (null: not a source VBO). */
+  uint32_t points = 0;
+  void release()
+  {
+    for (WGPUBuffer &b : bufs) {
+      if (b) {
+        wgpuBufferRelease(b);
+        b = nullptr;
+      }
+    }
+    bufs.clear();
+  }
+  ~PointExpand()
+  {
+    release();
+  }
+};
+
+WebGPUBatch::~WebGPUBatch()
+{
+  delete point_expand_;
+}
+
+/* Shared index buffer `[4p, 4p+1, 4p+2, 4p+2, 4p+1, 4p+3]` for `points` quads (grow-only). */
+static WGPUBuffer point_quad_index_buffer(WebGPUContext *ctx, uint32_t points)
+{
+  static WGPUBuffer s_buf = nullptr;
+  static uint32_t s_cap = 0;
+  static WGPUDevice s_dev = nullptr;
+  if (s_buf == nullptr || s_dev != ctx->device() || s_cap < points) {
+    if (s_buf && s_dev == ctx->device()) {
+      wgpuBufferRelease(s_buf);
+    }
+    s_cap = std::max<uint32_t>({points, s_cap * 2, 4096u});
+    std::vector<uint32_t> idx(size_t(s_cap) * 6);
+    for (uint32_t p = 0; p < s_cap; p++) {
+      const uint32_t b = p * 4;
+      uint32_t *o = &idx[size_t(p) * 6];
+      o[0] = b;
+      o[1] = b + 1;
+      o[2] = b + 2;
+      o[3] = b + 2;
+      o[4] = b + 1;
+      o[5] = b + 3;
+    }
+    WGPUBufferDescriptor bd = {};
+    bd.label = {"point_quad_ibo", WGPU_STRLEN};
+    bd.size = idx.size() * sizeof(uint32_t);
+    bd.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst;
+    s_buf = wgpuDeviceCreateBuffer(ctx->device(), &bd);
+    s_dev = ctx->device();
+    if (s_buf) {
+      wgpuQueueWriteBuffer(ctx->queue(), s_buf, 0, idx.data(), bd.size);
+    }
+  }
+  return s_buf;
+}
+
+/** \} */
+
 void WebGPUBatch::draw(int vertex_first, int vertex_count, int instance_first, int instance_count)
 {
   record_draw(vertex_first, vertex_count, instance_first, instance_count, nullptr, 0, 0, 0);
@@ -419,6 +496,7 @@ void WebGPUBatch::record_draw(int vertex_first,
   std::vector<WGPUVertexBufferLayout> vb_layouts;
   std::vector<std::vector<WGPUVertexAttribute>> vb_attrs; /* stable storage */
   std::vector<WGPUBuffer> vb_buffers;
+  std::vector<const WebGPUVertexBuffer *> vb_src; /* Parallel to vb_buffers (null: padding). */
   /* One shader location may match aliases in SEVERAL vbos (instancing vbos
    * repeat mesh attribute names) — a location bound twice is a pipeline
    * validation error. First matching vbo wins, like GL's bind order. */
@@ -475,6 +553,7 @@ void WebGPUBatch::record_draw(int vertex_first,
     }
     vb_attrs.push_back(std::move(attrs));
     vb_buffers.push_back(buf);
+    vb_src.push_back(static_cast<const WebGPUVertexBuffer *>(vbo));
     WGPUVertexBufferLayout layout = {};
     layout.arrayStride = fmt.stride;
     layout.stepMode = WGPUVertexStepMode_Vertex;
@@ -524,6 +603,7 @@ void WebGPUBatch::record_draw(int vertex_first,
     if (nb != nullptr) {
       vb_attrs.push_back(std::move(pad));
       vb_buffers.push_back(nb);
+      vb_src.push_back(nullptr);
       WGPUVertexBufferLayout layout = {};
       layout.arrayStride = 0;
       layout.stepMode = WGPUVertexStepMode_Vertex;
@@ -573,6 +653,123 @@ void WebGPUBatch::record_draw(int vertex_first,
     topo = WGPUPrimitiveTopology_TriangleStrip;
     for (WGPUVertexBufferLayout &l : vb_layouts) {
       l.stepMode = WGPUVertexStepMode_Instance;
+    }
+  }
+
+  /* Indexed point draws (edit-mode vertices): de-index + replicate 4x on the CPU. */
+  bool expand_indexed = false;
+  uint32_t expand_points_count = 0;
+  if (!expand_points && topo == WGPUPrimitiveTopology_PointList && shader->can_expand_points() &&
+      elem_() != nullptr && indirect_buf == nullptr && vp_rect[2] > 0 && vp_rect[3] > 0)
+  {
+    WebGPUIndexBuf *pibo = static_cast<WebGPUIndexBuf *>(elem_());
+    pibo->wgpu_buffer(); /* Uploads pending data (bumps the generation). */
+    const uint8_t *idata = static_cast<const uint8_t *>(pibo->cpu_data());
+    const uint32_t first = uint32_t(std::max(vertex_first, 0));
+    const uint32_t count = (vertex_count > 0) ? uint32_t(vertex_count) : pibo->index_len_get();
+    bool ok = idata != nullptr && !pibo->is_subrange() && first + count <= pibo->index_len_raw();
+    const WebGPUVertexBuffer *any_src = nullptr;
+    for (const WebGPUVertexBuffer *vs : vb_src) {
+      if (vs == nullptr) {
+        continue;
+      }
+      const_cast<WebGPUVertexBuffer *>(vs)->wgpu_buffer(); /* Upload pending data. */
+      ok = ok && vs->cpu_data() != nullptr && !vs->format.deinterleaved && vs->format.stride > 0;
+      any_src = vs;
+    }
+    if (ok && any_src != nullptr && count > 0) {
+      if (point_expand_ == nullptr) {
+        point_expand_ = new PointExpand();
+      }
+      PointExpand &pe = *point_expand_;
+      bool fresh = pe.ibo == pibo && pe.ibo_gen == pibo->gen() && pe.first == first &&
+                   pe.count == count && pe.base == pibo->index_base_get() &&
+                   pe.bufs.size() == vb_src.size();
+      for (size_t i = 0; fresh && i < vb_src.size(); i++) {
+        if (vb_src[i] != nullptr) {
+          const std::pair<const void *, uint64_t> g{vb_src[i], vb_src[i]->gen()};
+          fresh = i < pe.vbo_gens.size() && pe.vbo_gens[i] == g && pe.bufs[i] != nullptr;
+        }
+      }
+      if (!fresh) {
+        pe.release();
+        const bool is32 = pibo->is_32bit();
+        const uint32_t restart = is32 ? 0xFFFFFFFFu : 0xFFFFu;
+        const uint32_t base = pibo->index_base_get();
+        std::vector<uint32_t> verts;
+        verts.reserve(count);
+        for (uint32_t i = 0; i < count; i++) {
+          const uint32_t idx = is32 ? reinterpret_cast<const uint32_t *>(idata)[first + i] :
+                                      reinterpret_cast<const uint16_t *>(idata)[first + i];
+          if (idx == restart) {
+            continue; /* Hidden vertex. */
+          }
+          const uint32_t v = idx + base;
+          if (v < any_src->vertex_len) {
+            verts.push_back(v);
+          }
+        }
+        pe.points = uint32_t(verts.size());
+        pe.ibo = pibo;
+        pe.ibo_gen = pibo->gen();
+        pe.first = first;
+        pe.count = count;
+        pe.base = base;
+        pe.bufs.assign(vb_src.size(), nullptr);
+        pe.vbo_gens.assign(vb_src.size(), {nullptr, 0});
+        for (size_t i = 0; i < vb_src.size() && pe.points > 0; i++) {
+          const WebGPUVertexBuffer *vs = vb_src[i];
+          if (vs == nullptr) {
+            continue;
+          }
+          const size_t stride = vs->format.stride;
+          std::vector<uint8_t> dst(size_t(pe.points) * 4 * stride);
+          const uint8_t *src = vs->cpu_data();
+          for (uint32_t p = 0; p < pe.points; p++) {
+            const uint8_t *s = src + size_t(verts[p]) * stride;
+            for (uint32_t c = 0; c < 4; c++) {
+              std::memcpy(&dst[(size_t(p) * 4 + c) * stride], s, stride);
+            }
+          }
+          WGPUBufferDescriptor bd = {};
+          bd.label = {"point_expand_vbo", WGPU_STRLEN};
+          bd.size = (dst.size() + 3) & ~size_t(3);
+          bd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
+          pe.bufs[i] = wgpuDeviceCreateBuffer(ctx->device(), &bd);
+          if (pe.bufs[i]) {
+            dst.resize(bd.size);
+            wgpuQueueWriteBuffer(ctx->queue(), pe.bufs[i], 0, dst.data(), dst.size());
+          }
+          pe.vbo_gens[i] = {vs, vs->gen()};
+        }
+        if (getenv("WGPU_LOG_POINTS")) {
+          fprintf(stderr,
+                  "WGPU_PTS indexed expand '%s' points=%u of %u (first=%u base=%u)\n",
+                  shader->name_get().c_str(),
+                  pe.points,
+                  count,
+                  first,
+                  base);
+          fflush(stderr);
+        }
+      }
+      expand_points_count = pe.points;
+      bool all = pe.points > 0;
+      for (size_t i = 0; all && i < vb_src.size(); i++) {
+        all = (vb_src[i] == nullptr) || pe.bufs[i] != nullptr;
+      }
+      if (pe.points == 0) {
+        return; /* Every index was a restart: nothing to draw. */
+      }
+      if (all) {
+        expand_indexed = true;
+        topo = WGPUPrimitiveTopology_TriangleList;
+        for (size_t i = 0; i < vb_src.size(); i++) {
+          if (vb_src[i] != nullptr) {
+            vb_buffers[i] = pe.bufs[i];
+          }
+        }
+      }
     }
   }
 
@@ -652,7 +849,8 @@ void WebGPUBatch::record_draw(int vertex_first,
     }
   }
   hash_append(key, &expand_points, sizeof(expand_points));
-  if (expand_points) {
+  hash_append(key, &expand_indexed, sizeof(expand_indexed));
+  if (expand_points || expand_indexed) {
     hash_append(key, &vp_rect[2], sizeof(int) * 2);
   }
 
@@ -686,7 +884,7 @@ void WebGPUBatch::record_draw(int vertex_first,
     std::vector<WGPUConstantEntry> vert_consts, frag_consts;
     shader->spec_entries(shader->vertex_wgsl(), vert_consts);
     shader->spec_entries(shader->fragment_wgsl(), frag_consts);
-    if (expand_points) {
+    if (expand_points || expand_indexed) {
       /* Wrapper overrides: @id(240/241) viewport px, @id(242) expand enable. */
       WGPUConstantEntry e = {};
       e.key = {"240", WGPU_STRLEN};
@@ -983,14 +1181,27 @@ void WebGPUBatch::record_draw(int vertex_first,
     wgpuRenderPassEncoderSetVertexBuffer(pass, uint32_t(i), vb_buffers[i], 0, WGPU_WHOLE_SIZE);
   }
 
-  if (ibuf) {
+  WGPUBuffer quad_ib = nullptr;
+  if (expand_indexed) {
+    quad_ib = point_quad_index_buffer(ctx, expand_points_count);
+    if (quad_ib == nullptr) {
+      return;
+    }
+    wgpuRenderPassEncoderSetIndexBuffer(pass, quad_ib, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+  }
+  else if (ibuf) {
     WebGPUIndexBuf *ibo = static_cast<WebGPUIndexBuf *>(elem_());
     /* Subrange ibos share the parent's buffer; offset selects the slice. */
     wgpuRenderPassEncoderSetIndexBuffer(
         pass, ibuf, ibo->wgpu_index_format(), ibo->wgpu_index_offset_bytes(), WGPU_WHOLE_SIZE);
   }
 
-  if (indirect_buf != nullptr) {
+  if (expand_indexed) {
+    /* 6 indices (2 triangles) per point; firstInstance keeps the draw resource id intact. */
+    wgpuRenderPassEncoderDrawIndexed(
+        pass, 6 * expand_points_count, uint32_t(instance_count), 0, 0, uint32_t(instance_first));
+  }
+  else if (indirect_buf != nullptr) {
     /* Indirect path: DRW's draw commands generated on GPU (draw_command_generate).
      * Blender's DrawCommand(Indexed) layouts match WebGPU's (Draw|DrawIndexed)
      * Indirect layouts. Core WebGPU has no multi-draw: record one call per
