@@ -595,9 +595,14 @@ void WebGPUBatch::record_draw(int vertex_first,
   if (const char *dpat = getenv("WGPU_LOG_DRAW")) {
     if (fb != nullptr && strstr(fb->name_get(), dpat) != nullptr) {
       fprintf(stderr,
-              "WGPU_DRAW fb='%s' sh='%s' dtest=%d dwrite=%d blend=%d cull=%d\n",
+              "WGPU_DRAW fb='%s' sh='%s' v1st=%d vcnt=%d i1st=%d icnt=%d dtest=%d dwrite=%d blend=%d "
+              "cull=%d\n",
               fb->name_get(),
               shader->name_get().c_str(),
+              vertex_first,
+              vertex_count,
+              instance_first,
+              instance_count,
               int(depth_test),
               int(depth_write),
               int(blend),

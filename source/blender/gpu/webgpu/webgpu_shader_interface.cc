@@ -237,6 +237,16 @@ void WebGPUShaderInterface::init(const shader::ShaderCreateInfo &info)
     }
   }
 
+  /* Geometry-frequency storage buffers are vertex-fetch emulation resources (index buffer +
+   * attributes of the original batch, used by draw_expand / polyline shaders). Flag them so
+   * GPU_batch_bind_as_resources() binds them — same as the Vulkan/OpenGL interfaces. Without
+   * this the early-out leaves them unbound and the expanded geometry reads zeros. */
+  for (const ShaderCreateInfo::Resource &res : info.geometry_resources_) {
+    if (res.bind_type == ShaderCreateInfo::Resource::BindType::STORAGE_BUFFER) {
+      ssbo_attr_mask_ |= (1 << res.slot);
+    }
+  }
+
   /* --- Specialization constants --- */
   int constant_id = 0;
   for (const SpecializationConstant &constant : info.specialization_constants_) {
