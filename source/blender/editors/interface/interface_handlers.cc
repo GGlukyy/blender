@@ -3759,8 +3759,22 @@ static void button_edit_unit_hint_refresh(bContext *C, Button *but, HandleButton
   data->text_edit_unit_hint = " " + name_short;
 }
 
+#ifdef __EMSCRIPTEN__
+#  include <emscripten/emscripten.h>
+/* 1 while a text/number field is being edited. demo/src/touch.js polls it to raise the iPad soft
+ * keyboard when a field enters edit mode (and lower it when editing ends). */
+static int g_web_text_editing = 0;
+extern "C" EMSCRIPTEN_KEEPALIVE int blender_web_text_editing()
+{
+  return g_web_text_editing;
+}
+#endif
+
 static void textedit_begin(bContext *C, Button *but, HandleButtonData *data)
 {
+#ifdef __EMSCRIPTEN__
+  g_web_text_editing = 1;
+#endif
   TextEdit &text_edit = data->text_edit;
   wmWindow *win = data->window;
   const bool is_num_but = ELEM(but->type, ButtonType::Num, ButtonType::NumSlider);
@@ -3917,6 +3931,9 @@ static void textedit_begin(bContext *C, Button *but, HandleButtonData *data)
 
 static void textedit_end(bContext *C, Button *but, HandleButtonData *data)
 {
+#ifdef __EMSCRIPTEN__
+  g_web_text_editing = 0;
+#endif
   TextEdit &text_edit = data->text_edit;
   wmWindow *win = data->window;
 
