@@ -1656,6 +1656,49 @@ void WM_paint_cursor_tag_redraw(wmWindow *win, ARegion * /*region*/)
   }
 }
 
+#ifdef __EMSCRIPTEN__
+#  include <emscripten/emscripten.h>
+
+/* Web touch input (demo/src/touch.js) needs to know where the 3D viewports are: finger gestures
+ * orbit/zoom/pan there, but must drive sliders/scrolling over the UI panels. Layout: [count,
+ * xmin, ymin, xmax, ymax, ...] in canvas pixels with a top-left origin, up to 8 viewports. */
+static int g_web_viewport_rects[1 + 4 * 8] = {0};
+extern "C" EMSCRIPTEN_KEEPALIVE const int *blender_web_viewport_rects()
+{
+  return g_web_viewport_rects;
+}
+
+static void wm_web_publish_viewports(wmWindow *win)
+{
+  bScreen *screen = WM_window_get_active_screen(win);
+  if (screen == nullptr) {
+    return;
+  }
+  const int height = WM_window_native_pixel_y(win);
+  int n = 0;
+  int rects[4 * 8];
+  ED_screen_areas_iter (win, screen, area) {
+    if (area->spacetype != SPACE_VIEW3D) {
+      continue;
+    }
+    for (ARegion &region : area->regionbase) {
+      if (region.regiontype != RGN_TYPE_WINDOW || !region.runtime->visible || n >= 8) {
+        continue;
+      }
+      rects[4 * n + 0] = region.winrct.xmin;
+      rects[4 * n + 1] = height - region.winrct.ymax;
+      rects[4 * n + 2] = region.winrct.xmax;
+      rects[4 * n + 3] = height - region.winrct.ymin;
+      n++;
+    }
+  }
+  for (int i = 0; i < 4 * n; i++) {
+    g_web_viewport_rects[1 + i] = rects[i];
+  }
+  g_web_viewport_rects[0] = n;
+}
+#endif
+
 void wm_draw_update(bContext *C)
 {
   PRF_scope(ProfileCategory::Draw);
@@ -1691,6 +1734,10 @@ void wm_draw_update(bContext *C)
 #endif
 
     CTX_wm_window_set(C, &win);
+
+#ifdef __EMSCRIPTEN__
+    wm_web_publish_viewports(&win);
+#endif
 
     if (wm_draw_update_test_window(bmain, C, &win)) {
       PRF_frame_mark_start("Window Drawing"_ustr);
