@@ -17,8 +17,10 @@
 #include "BLI_listbase.hh"
 #include "BLI_math_bits.hh"
 #include "BLI_math_geom_c.hh"
+#include "BLI_math_matrix.hh"
 #include "BLI_math_matrix_c.hh"
 #include "BLI_math_rotation_c.hh"
+#include "BLI_math_vector.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_rand_c.hh"
 #include "BLI_utildefines_stack.hh"
@@ -30,6 +32,7 @@
 #include "BKE_customdata.hh"
 #include "BKE_deform.hh"
 #include "BKE_editmesh.hh"
+#include "BKE_editmesh_bvh.hh"
 #include "BKE_layer.hh"
 #include "BKE_mesh.hh"
 #include "BKE_mesh_wrapper.hh"
@@ -67,13 +70,16 @@
 #include "mesh_intern.hh" /* Own include. */
 
 /* WEB (WebGPU) build: GPU select-ID / depth buffers cannot be read back synchronously yet
- * (no JSPI), so zbuf-based selection would always read zeros and select nothing. Fall back to
- * the geometric ("X-Ray") nearest search until async readback lands (docs/STATUS.md). */
+ * (no JSPI), so zbuf-based selection would always read zeros and select nothing.
+ * Instead Solid mode uses the geometric ("X-Ray") nearest search plus a CPU occlusion test
+ * (editmesh BVH ray casts, see #WebOccl below): verts/edges skip occluded candidates, faces are
+ * picked by a ray cast under the cursor. See docs/STATUS.md. */
 #ifdef __EMSCRIPTEN__
-#  define SELECT_USE_ZBUF(v3d) (false)
+#  define SELECT_USE_ZBUF_VE(v3d) (false)
 #else
-#  define SELECT_USE_ZBUF(v3d) (!XRAY_FLAG_ENABLED(v3d))
+#  define SELECT_USE_ZBUF_VE(v3d) (!XRAY_FLAG_ENABLED(v3d))
 #endif
+#define SELECT_USE_ZBUF(v3d) (!XRAY_FLAG_ENABLED(v3d))
 
 namespace blender {
 
@@ -383,6 +389,149 @@ static BMElem *edbm_select_id_bm_elem_get(const Span<Base *> bases,
 
 /** \} */
 
+#ifdef __EMSCRIPTEN__
+/* -------------------------------------------------------------------- */
+/** \name Web: CPU occlusion for Solid-mode picking
+ * \{ */
+
+/** Faces adjacent to the tested element never occlude it. */
+struct WebOccExclude {
+  const BMVert *vert;
+  const BMEdge *edge;
+};
+
+static bool web_occ_face_filter(BMFace *f, void *user_data)
+{
+  const WebOccExclude *ex = static_cast<const WebOccExclude *>(user_data);
+  if (ex->vert && BM_vert_in_face(const_cast<BMVert *>(ex->vert), f)) {
+    return false;
+  }
+  if (ex->edge && BM_edge_in_face(const_cast<BMEdge *>(ex->edge), f)) {
+    return false;
+  }
+  return true;
+}
+
+/** One BVH per edit-mode base, built per pick (cheap for modeling-sized meshes). */
+struct WebOccl {
+  struct Tree {
+    BMBVHTree *bvh;
+    float4x4 obmat;
+    float4x4 obinv;
+  };
+  ViewContext *vc;
+  Vector<Tree> trees;
+
+  WebOccl(ViewContext *vc_, const Span<Base *> bases) : vc(vc_)
+  {
+    for (Base *base : bases) {
+      BMEditMesh *em = BKE_editmesh_from_object(base->object);
+      Tree t;
+      t.bvh = em ? BKE_bmbvh_new_from_editmesh(em, BMBVH_RESPECT_HIDDEN, nullptr, false) : nullptr;
+      t.obmat = base->object->object_to_world();
+      t.obinv = math::invert(t.obmat);
+      trees.append(t);
+    }
+  }
+  ~WebOccl()
+  {
+    for (Tree &t : trees) {
+      if (t.bvh) {
+        BKE_bmbvh_free(t.bvh);
+      }
+    }
+  }
+
+  /** Is the object-space point \a co_obj of tree \a tree_i, drawn at \a screen_co, visible? */
+  bool point_visible(const int tree_i,
+                     const float3 &co_obj,
+                     const float2 &screen_co,
+                     const BMVert *vert,
+                     const BMEdge *edge) const
+  {
+    float start[3], end[3];
+    if (!ED_view3d_win_to_segment_clipped(
+            vc->depsgraph, vc->region, vc->v3d, screen_co, start, end, true))
+    {
+      return true;
+    }
+    const float3 co_world = math::transform_point(trees[tree_i].obmat, co_obj);
+    const float3 to_eye = float3(start) - co_world;
+    const float len = math::length(to_eye);
+    if (len < 1e-9f) {
+      return true;
+    }
+    /* Start a little off the surface so the element's own neighbourhood is not re-hit. */
+    const float3 origin_world = co_world + to_eye * 1e-4f;
+    const float3 eye_world = float3(start);
+
+    for (const int i : trees.index_range()) {
+      if (!trees[i].bvh) {
+        continue;
+      }
+      const float3 o = math::transform_point(trees[i].obinv, origin_world);
+      const float3 e = math::transform_point(trees[i].obinv, eye_world);
+      float3 dir = e - o;
+      float dist = math::length(dir);
+      if (dist < 1e-9f) {
+        continue;
+      }
+      dir /= dist;
+      WebOccExclude ex = {i == tree_i ? vert : nullptr, i == tree_i ? edge : nullptr};
+      if (BKE_bmbvh_ray_cast_filter(
+              trees[i].bvh, o, dir, 0.0f, &dist, nullptr, nullptr, web_occ_face_filter, &ex))
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** The frontmost face under the cursor (all trees); sets \a r_tree. */
+  BMFace *face_under_cursor(const float2 &mval, int &r_tree) const
+  {
+    float start[3], end[3];
+    if (!ED_view3d_win_to_segment_clipped(
+            vc->depsgraph, vc->region, vc->v3d, mval, start, end, true))
+    {
+      return nullptr;
+    }
+    BMFace *best = nullptr;
+    float best_dist = FLT_MAX;
+    for (const int i : trees.index_range()) {
+      if (!trees[i].bvh) {
+        continue;
+      }
+      const float3 o = math::transform_point(trees[i].obinv, float3(start));
+      const float3 e = math::transform_point(trees[i].obinv, float3(end));
+      float3 dir = e - o;
+      const float len = math::length(dir);
+      if (len < 1e-9f) {
+        continue;
+      }
+      dir /= len;
+      float dist = FLT_MAX;
+      float3 hit;
+      BMFace *f = BKE_bmbvh_ray_cast(trees[i].bvh, o, dir, 0.0f, &dist, hit, nullptr);
+      if (f) {
+        /* Compare in world space (object scale may differ between bases). */
+        const float d = math::distance(math::transform_point(trees[i].obmat, hit),
+                                       float3(start));
+        if (d < best_dist) {
+          best_dist = d;
+          best = f;
+          r_tree = i;
+        }
+      }
+    }
+    return best;
+  }
+};
+
+/** \} */
+
+#endif /* __EMSCRIPTEN__ */
+
 /* -------------------------------------------------------------------- */
 /** \name Find Nearest Vert/Edge/Face
  *
@@ -409,6 +558,10 @@ struct NearestVertUserData {
   bool use_select_bias;
   bool use_cycle;
   int cycle_index_prev;
+#ifdef __EMSCRIPTEN__
+  const WebOccl *occ = nullptr; /* Non-null: skip occluded candidates (Solid mode). */
+  int occ_tree = 0;
+#endif
 
   NearestVertUserData_Hit hit;
   NearestVertUserData_Hit hit_cycle;
@@ -427,6 +580,14 @@ static void findnearestvert__doClosest(void *user_data,
   if (data->use_select_bias && BM_elem_flag_test(eve, BM_ELEM_SELECT)) {
     dist_test_bias += FIND_NEAR_SELECT_BIAS;
   }
+
+#ifdef __EMSCRIPTEN__
+  if (data->occ && dist_test_bias < data->hit.dist_bias &&
+      !data->occ->point_visible(data->occ_tree, eve->co, screen_co, eve, nullptr))
+  {
+    return;
+  }
+#endif
 
   if (dist_test_bias < data->hit.dist_bias) {
     data->hit.dist_bias = dist_test_bias;
@@ -456,7 +617,7 @@ BMVert *EDBM_vert_find_nearest_ex(ViewContext *vc,
 {
   uint base_index = 0;
 
-  if (SELECT_USE_ZBUF(vc->v3d)) {
+  if (SELECT_USE_ZBUF_VE(vc->v3d)) {
     uint dist_px_manhattan_test = uint(
         ED_view3d_backbuf_sample_size_clamp(vc->region, *dist_px_manhattan_p));
     uint index;
@@ -506,10 +667,20 @@ BMVert *EDBM_vert_find_nearest_ex(ViewContext *vc,
   data.mval_fl[1] = vc->mval[1];
   data.use_select_bias = use_select_bias;
   data.use_cycle = use_cycle;
+#ifdef __EMSCRIPTEN__
+  std::optional<WebOccl> web_occ;
+  if (!XRAY_FLAG_ENABLED(vc->v3d)) {
+    web_occ.emplace(vc, bases);
+    data.occ = &*web_occ;
+  }
+#endif
 
   for (; base_index < bases.size(); base_index++) {
     Base *base_iter = bases[base_index];
     ED_view3d_viewcontext_init_object(vc, base_iter->object);
+#ifdef __EMSCRIPTEN__
+    data.occ_tree = int(base_index);
+#endif
     if (use_cycle && prev_select.bm == vc->em->bm &&
         prev_select.elem == BM_vert_at_index_find_or_table(vc->em->bm, prev_select.index))
     {
@@ -601,6 +772,10 @@ struct NearestEdgeUserData {
   bool use_select_bias;
   bool use_cycle;
   int cycle_index_prev;
+#ifdef __EMSCRIPTEN__
+  const WebOccl *occ = nullptr; /* Non-null: skip occluded candidates (Solid mode). */
+  int occ_tree = 0;
+#endif
 
   NearestEdgeUserData_Hit hit;
   NearestEdgeUserData_Hit hit_cycle;
@@ -646,6 +821,17 @@ static void find_nearest_edge__doClosest(void *user_data,
     }
   }
 
+#ifdef __EMSCRIPTEN__
+  if (data->occ && dist_test_bias < data->hit.dist_bias) {
+    float3 co_on_edge;
+    /* Slightly inside the edge, like BMBVH_EdgeVisible, so the end verts' faces don't self-hit. */
+    interp_v3_v3v3(co_on_edge, eed->v1->co, eed->v2->co, std::clamp(fac, 0.01f, 0.99f));
+    if (!data->occ->point_visible(data->occ_tree, co_on_edge, screen_co, nullptr, eed)) {
+      return;
+    }
+  }
+#endif
+
   if (dist_test_bias < data->hit.dist_bias) {
     float screen_co_mid[2];
 
@@ -686,7 +872,7 @@ BMEdge *EDBM_edge_find_nearest_ex(ViewContext *vc,
 {
   uint base_index = 0;
 
-  if (SELECT_USE_ZBUF(vc->v3d)) {
+  if (SELECT_USE_ZBUF_VE(vc->v3d)) {
     uint dist_px_manhattan_test = uint(
         ED_view3d_backbuf_sample_size_clamp(vc->region, *dist_px_manhattan_p));
     uint index;
@@ -760,10 +946,20 @@ BMEdge *EDBM_edge_find_nearest_ex(ViewContext *vc,
   data.mval_fl[1] = vc->mval[1];
   data.use_select_bias = use_select_bias;
   data.use_cycle = use_cycle;
+#ifdef __EMSCRIPTEN__
+  std::optional<WebOccl> web_occ;
+  if (!XRAY_FLAG_ENABLED(vc->v3d)) {
+    web_occ.emplace(vc, bases);
+    data.occ = &*web_occ;
+  }
+#endif
 
   for (; base_index < bases.size(); base_index++) {
     Base *base_iter = bases[base_index];
     ED_view3d_viewcontext_init_object(vc, base_iter->object);
+#ifdef __EMSCRIPTEN__
+    data.occ_tree = int(base_index);
+#endif
     if (use_cycle && prev_select.bm == vc->em->bm &&
         prev_select.elem == BM_edge_at_index_find_or_table(vc->em->bm, prev_select.index))
     {
@@ -904,6 +1100,21 @@ BMFace *EDBM_face_find_nearest_ex(ViewContext *vc,
     uint index;
     BMFace *efa;
 
+#ifdef __EMSCRIPTEN__
+    UNUSED_VARS(use_zbuf_single_px, index);
+    {
+      /* No select-ID buffer on web: the frontmost face under the cursor via editmesh BVH ray cast. */
+      const WebOccl occ(vc, bases);
+      int tree = 0;
+      efa = occ.face_under_cursor(float2(vc->mval[0], vc->mval[1]), tree);
+      index = 0;
+      dist_test = 0.0f;
+      if (efa) {
+        base_index = uint(tree);
+        ED_view3d_viewcontext_init_object(vc, bases[base_index]->object);
+      }
+    }
+#else
     {
       uint dist_px_manhattan_test = 0;
       if (*dist_px_manhattan_p != 0.0f && (use_zbuf_single_px == false)) {
@@ -930,6 +1141,7 @@ BMFace *EDBM_face_find_nearest_ex(ViewContext *vc,
         efa = nullptr;
       }
     }
+#endif
 
     if (r_efa_zbuf) {
       *r_efa_zbuf = efa;
