@@ -2279,6 +2279,16 @@ void ED_preview_icon_job(
     return;
   }
 
+#ifdef __EMSCRIPTEN__
+  /* EEVEE icon previews (material/world/light) compile ~30 big pipelines synchronously on the
+   * main thread: the UI freezes for 6+ s (PC) the first time the Material tab is opened.
+   * Skip them unless BLENDER_WEB_ICON_PREVIEWS is set (URL ?iconprev=1). */
+  static const bool web_icon_previews = getenv("BLENDER_WEB_ICON_PREVIEWS") != nullptr;
+  if (!web_icon_previews && ELEM(GS(id->name), ID_MA, ID_WO, ID_LA)) {
+    return;
+  }
+#endif
+
   IconPreview *ip, *old_ip;
 
   ED_preview_ensure_dbase(true);
