@@ -270,7 +270,8 @@ Mesh *BKE_mesh_remesh_voxel(const Mesh *mesh,
   }
   return result;
 #else
-  UNUSED_VARS(mesh, voxel_size, adaptivity, isovalue, object, modifier_data);
+  UNUSED_VARS(mesh, voxel_size, adaptivity, isovalue);
+  BKE_modifier_set_error(object, modifier_data, "Voxel remesh unavailable: built without OpenVDB");
   return nullptr;
 #endif
 }
@@ -300,7 +301,8 @@ Mesh *BKE_mesh_remesh_voxel(const Mesh *mesh,
   }
   return result;
 #else
-  UNUSED_VARS(mesh, voxel_size, adaptivity, isovalue, reports);
+  UNUSED_VARS(mesh, voxel_size, adaptivity, isovalue);
+  BKE_report(reports, RPT_ERROR, "Voxel remesh unavailable: built without OpenVDB");
   return nullptr;
 #endif
 }
