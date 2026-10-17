@@ -56,7 +56,15 @@ static WGPUShaderModule webgpu_module_from_wgsl(const std::string &wgsl)
   WGPUShaderModuleDescriptor desc = {};
   desc.nextInChain = &src.chain;
   wgpu_note_compile();
-  return wgpuDeviceCreateShaderModule(device, &desc);
+  const double t_mod0 = emscripten_get_now();
+  WGPUShaderModule mod = wgpuDeviceCreateShaderModule(device, &desc);
+  {
+    static const bool log_compile = getenv("WGPU_LOG_COMPILE") != nullptr;
+    if (log_compile) {
+      fprintf(stderr, "COMPILELOG module %.1f ms\n", emscripten_get_now() - t_mod0);
+    }
+  }
+  return mod;
 }
 
 using namespace shader;

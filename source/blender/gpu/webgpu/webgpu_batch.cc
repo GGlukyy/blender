@@ -958,7 +958,14 @@ void WebGPUBatch::record_draw(int vertex_first,
     rpd.depthStencil = has_depth ? &ds : nullptr;
 
     wgpu_note_compile();
+    const double t_pipe0 = emscripten_get_now();
     pipeline = wgpuDeviceCreateRenderPipeline(ctx->device(), &rpd);
+    {
+      static const bool log_compile = getenv("WGPU_LOG_COMPILE") != nullptr;
+      if (log_compile) {
+        fprintf(stderr, "COMPILELOG pipeline '%s' %.1f ms\n", shader->name_get().c_str(), emscripten_get_now() - t_pipe0);
+      }
+    }
     if (pipe_layout) {
       wgpuPipelineLayoutRelease(pipe_layout);
     }
