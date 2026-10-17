@@ -450,6 +450,10 @@ static std::string webgpu_glsl_patch(const char *stage_define)
   ss << "layout(constant_id = 240) const float gpu_viewport_w = 1024.0;\n";
   ss << "layout(constant_id = 241) const float gpu_viewport_h = 1024.0;\n";
   ss << "layout(constant_id = 242) const float gpu_point_expand = 0.0;\n";
+  /* Overlay passes (edit-mesh faces) depth-test LESS_EQUAL against geometry drawn by another
+   * shader at the SAME depth. Without @invariant Tint/Dawn may fuse the MVP math differently per
+   * shader, so equal depths differ by an ulp and the overlay z-fights. */
+  ss << "invariant gl_Position;\n";
   ss << "#endif\n";
   /* When the fragment stage actually reads gl_PointCoord AND the draw goes
    * through point->quad expansion, ensure_translated() defines
