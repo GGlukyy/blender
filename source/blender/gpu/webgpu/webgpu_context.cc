@@ -1413,7 +1413,7 @@ void WebGPUContext::present_backbuffer(int w, int h)
       }
     }
 #endif
-    if (s_frame <= 8 || (s_frame % 60) == 0 || frame_ms > 25.0) {
+    if (s_frame <= 8 || (s_frame % (g_perf_enabled ? 20 : 60)) == 0 || frame_ms > 25.0) {
       fprintf(stderr,
               "WGPU_STATS frame=%d dt=%.1fms submits=%d passes=%d bindgroups=%d bg_hits=%d "
               "guard_flushes=%d fb_switches=%d tex=%d/%lldMB writes=%lld/%lldKB big=%lld\n",
