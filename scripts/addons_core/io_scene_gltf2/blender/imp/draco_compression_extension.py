@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ctypes import *
+try:
+    from ctypes import *
+except ImportError:  # web build: CPython without _ctypes (no native Draco library either)
+    cdll = None
 
 from ...io.com.gltf2_io import BufferView
 from ...io.imp.gltf2_io_binary import BinaryData
@@ -14,6 +17,9 @@ def decode_primitive(gltf, prim):
     Handles draco compression.
     Moves decoded data into new buffers and buffer views held by the accessors of the given primitive.
     """
+
+    if cdll is None:
+        raise RuntimeError("Draco compression is not available in the web build")
 
     # Load DLL and setup function signatures.
     dll = cdll.LoadLibrary(str(dll_path('bf_intern_draco_bridge', 'Draco').resolve()))

@@ -180,7 +180,7 @@ if DO_PERFMON:
                 return
             ref_time = self.ref_time[self.level]
             print("\t" * self.level,
-                  "\tDone (%f sec)\n" % ((time.process_time() - ref_time) if ref_time is not None else 0.0),
+                  "\tDone (%f sec)\n" % ((time.perf_counter() - ref_time) if ref_time is not None else 0.0),
                   sep="")
             if message:
                 print("\t" * self.level, message, sep="")
@@ -189,7 +189,7 @@ if DO_PERFMON:
 
         def step(self, message=""):
             ref_time = self.ref_time[self.level]
-            curr_time = time.process_time()
+            curr_time = time.perf_counter()
             if ref_time is not None:
                 print("\t" * self.level, "\tDone (%f sec)\n" % (curr_time - ref_time), sep="")
             self.ref_time[self.level] = curr_time

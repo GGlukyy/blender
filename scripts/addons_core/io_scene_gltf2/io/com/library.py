@@ -45,5 +45,5 @@ def dll_exists(lib_name, lib_display_name) -> bool:
         print(
             'ERROR',
             '{} is not available because library could not be found at %s'.format(lib_display_name) %
-            path.absolute())
+            (path.absolute() if path is not None else '(no library for this platform)'))
     return exists

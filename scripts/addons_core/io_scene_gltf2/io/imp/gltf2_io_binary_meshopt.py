@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import ctypes
+try:
+    import ctypes
+except ImportError:  # web build: CPython without _ctypes (no native libs there either)
+    ctypes = None
 import sys
 import os
 from .gltf2_io_gltf import ImportError
@@ -16,6 +19,8 @@ class MeshoptDecoder:
 
     @staticmethod
     def find_library():
+        if ctypes is None:
+            raise RuntimeError("Meshopt library is not available in the web build")
         """Find the Meshopt decoder library."""
         path = dll_path('bf_intern_meshopt_bridge', 'MeshOptimizer')
         if path is not None and path.exists() and path.is_file():

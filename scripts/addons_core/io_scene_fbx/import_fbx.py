@@ -3069,7 +3069,7 @@ def load(operator, context, filepath="",
     from . import parse_fbx
     from .fbx_utils import RIGHT_HAND_AXES, FBX_FRAMERATES
 
-    start_time_proc = time.process_time()
+    start_time_proc = time.perf_counter()
     start_time_sys = time.time()
 
     perfmon = PerfMon()

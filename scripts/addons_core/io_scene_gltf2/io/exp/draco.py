@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ctypes import *
+try:
+    from ctypes import *
+except ImportError:  # web build: CPython without _ctypes (and no native Draco library either)
+    cdll = None
 
 from ...io.exp.binary_data import BinaryData
 from ...io.com.library import dll_path
@@ -13,6 +16,9 @@ def encode_scene_primitives(scenes, export_settings):
     Handles draco compression.
     Moves position, normal and texture coordinate attributes into a Draco encoded buffer.
     """
+
+    if cdll is None:
+        raise RuntimeError("Draco compression is not available in the web build")
 
     # Load DLL and setup function signatures.
     dll = cdll.LoadLibrary(str(dll_path('bf_intern_draco_bridge', 'Draco').resolve()))

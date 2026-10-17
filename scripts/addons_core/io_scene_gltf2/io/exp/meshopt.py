@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import ctypes
+try:
+    import ctypes
+except ImportError:  # web build: CPython without _ctypes (no native libs there either)
+    ctypes = None
 import numpy as np
 
 from ...io.com.library import dll_path
@@ -26,6 +29,8 @@ class MeshoptEncoder:
 
     @staticmethod
     def find_library():
+        if ctypes is None:
+            raise RuntimeError("Meshopt library is not available in the web build")
         """Find the Meshopt encoder library."""
         path = dll_path('bf_intern_meshopt_bridge', 'MeshOptimizer')
         if path is not None and path.exists() and path.is_file():

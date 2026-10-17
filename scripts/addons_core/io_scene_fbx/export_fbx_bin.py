@@ -3448,7 +3448,7 @@ def fbx_objects_elements(root, scene_data):
         fbx_data_video_elements(objects, vid, scene_data)
 
     perfmon.step("FBX export fetch animations...")
-    start_time = time.process_time()
+    start_time = time.perf_counter()
 
     fbx_data_animation_elements(objects, scene_data)
 
