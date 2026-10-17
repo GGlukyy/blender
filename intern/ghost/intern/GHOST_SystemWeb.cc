@@ -14,6 +14,8 @@
 #include "GHOST_EventButton.hh"
 #include "GHOST_EventCursor.hh"
 #include "GHOST_EventKey.hh"
+#include <atomic>
+
 #include "GHOST_EventWheel.hh"
 #include "GHOST_SystemWeb.hh"
 #include "GHOST_TimerManager.hh"
@@ -22,6 +24,38 @@
 #define WEB_CANVAS "#canvas"
 
 /* --- Static trampolines ----------------------------------------------------- */
+
+/* Apple Pencil / stylus data from the page (demo/src/touch.js). DOM MouseEvents carry no pressure,
+ * so JS stores the latest PointerEvent sample here (shared wasm memory) right before it dispatches
+ * the synthetic mouse event; handleMouse() attaches it as tablet data so sculpt/paint brushes get
+ * pressure and tilt. */
+static std::atomic<int> g_pen_active{0};
+static std::atomic<float> g_pen_pressure{1.0f};
+static std::atomic<float> g_pen_xtilt{0.0f};
+static std::atomic<float> g_pen_ytilt{0.0f};
+extern "C" EMSCRIPTEN_KEEPALIVE void blender_web_pen(int active,
+                                                     float pressure,
+                                                     float xtilt,
+                                                     float ytilt)
+{
+  g_pen_pressure = pressure;
+  g_pen_xtilt = xtilt;
+  g_pen_ytilt = ytilt;
+  g_pen_active = active;
+}
+
+static GHOST_TabletData web_tablet_data()
+{
+  if (!g_pen_active.load()) {
+    return GHOST_TABLET_DATA_NONE;
+  }
+  GHOST_TabletData td;
+  td.Active = GHOST_kTabletModeStylus;
+  td.Pressure = g_pen_pressure.load();
+  td.Xtilt = g_pen_xtilt.load();
+  td.Ytilt = g_pen_ytilt.load();
+  return td;
+}
 
 static bool web_mouse_cb(int type, const EmscriptenMouseEvent *e, void *user)
 {
@@ -206,7 +240,7 @@ bool GHOST_SystemWeb::handleMouse(int event_type, const EmscriptenMouseEvent *e)
   switch (event_type) {
     case EMSCRIPTEN_EVENT_MOUSEMOVE:
       pushEvent(std::unique_ptr<const GHOST_IEvent>(new GHOST_EventCursor(
-          t, GHOST_kEventCursorMove, window_, cursor_x_, cursor_y_, GHOST_TABLET_DATA_NONE)));
+          t, GHOST_kEventCursorMove, window_, cursor_x_, cursor_y_, web_tablet_data())));
       return true;
     case EMSCRIPTEN_EVENT_MOUSEDOWN:
     case EMSCRIPTEN_EVENT_MOUSEUP: {
@@ -219,7 +253,7 @@ bool GHOST_SystemWeb::handleMouse(int event_type, const EmscriptenMouseEvent *e)
                                       down ? GHOST_kEventButtonDown : GHOST_kEventButtonUp,
                                       window_,
                                       button,
-                                      GHOST_TABLET_DATA_NONE)));
+                                      web_tablet_data())));
       return true;
     }
     default:
