@@ -410,6 +410,7 @@ void WebGPUContext::render_pass_end()
 /* Per-present perf counters (all contexts; printed by present_backbuffer). */
 double g_stat_api_ms = 0.0;
 int g_stat_api_depth = 0;
+bool g_perf_enabled = getenv("WGPU_PERF") != nullptr;
 extern int g_stat_imm_buffers;
 extern long long g_stat_imm_bytes;
 int g_stat_submits = 0;
@@ -1395,9 +1396,13 @@ void WebGPUContext::present_backbuffer(int w, int h)
       static int s_acc_n = 0;
       s_acc_ms += frame_ms;
       s_acc_api += g_stat_api_ms;
+      if (!g_perf_enabled) {
+        s_acc_n = 0;
+        s_acc_ms = s_acc_api = s_max_ms = 0.0;
+      }
       s_max_ms = std::max(s_max_ms, frame_ms);
       s_acc_n++;
-      if (s_acc_n >= 30) {
+      if (s_acc_n >= 30 && g_perf_enabled) {
         extern int g_stat_tex_count, g_stat_imm_buffers;
         extern long long g_stat_tex_bytes, g_stat_imm_bytes;
         wgpu_perf_post(s_frame, s_acc_ms / s_acc_n, s_max_ms, g_stat_submits, g_stat_passes,

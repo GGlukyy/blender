@@ -33,17 +33,19 @@ namespace blender::gpu {
  * scope only, so nested timers are not double counted). Reset per frame in present_backbuffer. */
 extern double g_stat_api_ms;
 extern int g_stat_api_depth;
+/** True when the page was opened with ?perf=1 (ENV.WGPU_PERF); timers cost ~4% otherwise. */
+extern bool g_perf_enabled;
 struct WebGPUApiTimer {
   double t0 = 0.0;
   WebGPUApiTimer()
   {
-    if (g_stat_api_depth++ == 0) {
+    if (g_perf_enabled && g_stat_api_depth++ == 0) {
       t0 = emscripten_get_now();
     }
   }
   ~WebGPUApiTimer()
   {
-    if (--g_stat_api_depth == 0) {
+    if (g_perf_enabled && --g_stat_api_depth == 0) {
       g_stat_api_ms += emscripten_get_now() - t0;
     }
   }
