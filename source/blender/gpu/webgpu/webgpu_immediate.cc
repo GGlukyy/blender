@@ -18,6 +18,10 @@
 
 namespace blender::gpu {
 
+/* ?perf=1: immediate-mode buffers created this frame (reset in present_backbuffer). */
+int g_stat_imm_buffers = 0;
+long long g_stat_imm_bytes = 0;
+
 uchar *WebGPUImmediate::begin()
 {
   const size_t bytes_needed = size_t(vertex_len) * vertex_format.stride;
@@ -75,6 +79,8 @@ void WebGPUImmediate::end()
   bd.label = {"immediate", WGPU_STRLEN};
   bd.size = buf_size;
   bd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+  g_stat_imm_buffers++;
+  g_stat_imm_bytes += buf_size;
   WGPUBuffer buf = wgpuDeviceCreateBuffer(ctx->device(), &bd);
   if (buf == nullptr) {
     return;

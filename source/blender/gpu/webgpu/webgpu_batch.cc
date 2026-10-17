@@ -447,6 +447,7 @@ void WebGPUBatch::record_draw(int vertex_first,
                               intptr_t indirect_offset,
                               intptr_t indirect_stride)
 {
+  WebGPUApiTimer api_timer;
   WebGPUContext *ctx = WebGPUContext::get();
   static int s_entry_log = 0;
   if (s_entry_log < 8) {

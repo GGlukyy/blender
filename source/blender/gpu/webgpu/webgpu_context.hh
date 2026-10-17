@@ -25,7 +25,29 @@
 #include "webgpu_framebuffer.hh"
 #include "webgpu_shader.hh"
 
+#include <emscripten/emscripten.h>
+
 namespace blender::gpu {
+
+/** ?perf=1 telemetry: wall time spent in WebGPU API recording/submission per frame (outermost
+ * scope only, so nested timers are not double counted). Reset per frame in present_backbuffer. */
+extern double g_stat_api_ms;
+extern int g_stat_api_depth;
+struct WebGPUApiTimer {
+  double t0 = 0.0;
+  WebGPUApiTimer()
+  {
+    if (g_stat_api_depth++ == 0) {
+      t0 = emscripten_get_now();
+    }
+  }
+  ~WebGPUApiTimer()
+  {
+    if (--g_stat_api_depth == 0) {
+      g_stat_api_ms += emscripten_get_now() - t0;
+    }
+  }
+};
 
 class WebGPUTexture;
 

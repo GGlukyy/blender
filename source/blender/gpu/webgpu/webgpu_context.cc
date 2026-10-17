@@ -49,11 +49,11 @@
 #  include <emscripten/em_js.h>
 /* ?perf=1 overlay (demo/src/main.js): the render pthread cannot touch the page DOM, so it posts a
  * sample to a BroadcastChannel every ~30 frames. */
-EM_JS(void, wgpu_perf_post, (int frame, double dt_avg_ms, double dt_max_ms, int submits, int passes, int bindgroups, int tex, int tex_mb), {
+EM_JS(void, wgpu_perf_post, (int frame, double dt_avg_ms, double dt_max_ms, int submits, int passes, int bindgroups, int tex, int tex_mb, double api_ms, int imm_bufs, int imm_kb), {
   if (!globalThis.__perf_bc) {
     globalThis.__perf_bc = new BroadcastChannel("blender-perf");
   }
-  globalThis.__perf_bc.postMessage({frame, dt_avg_ms, dt_max_ms, submits, passes, bindgroups, tex, tex_mb,
+  globalThis.__perf_bc.postMessage({frame, dt_avg_ms, dt_max_ms, submits, passes, bindgroups, tex, tex_mb, api_ms, imm_bufs, imm_kb,
                                     heap_mb: HEAPU8.length / 1048576});
 });
 #endif
@@ -316,6 +316,7 @@ WGPUCommandEncoder WebGPUContext::ensure_encoder()
 
 void WebGPUContext::render_pass_ensure(WebGPUFrameBuffer &fb)
 {
+  WebGPUApiTimer api_timer;
   if (render_pass_ != nullptr && render_pass_fb_ == &fb) {
     return;
   }
@@ -335,6 +336,7 @@ void WebGPUContext::render_pass_ensure(WebGPUFrameBuffer &fb)
 
 void WebGPUContext::render_pass_end()
 {
+  WebGPUApiTimer api_timer;
   if (render_pass_) {
     /* An occlusion query spanning this pass must close before the pass ends
      * (it re-opens in the next pass while the pool's query is still pending). */
@@ -406,6 +408,10 @@ void WebGPUContext::render_pass_end()
 }
 
 /* Per-present perf counters (all contexts; printed by present_backbuffer). */
+double g_stat_api_ms = 0.0;
+int g_stat_api_depth = 0;
+extern int g_stat_imm_buffers;
+extern long long g_stat_imm_bytes;
 int g_stat_submits = 0;
 int g_stat_passes = 0;
 int g_stat_bindgroups = 0;
@@ -432,6 +438,7 @@ void webgpu_stat_flush_dump()
 
 void WebGPUContext::flush_encoder()
 {
+  WebGPUApiTimer api_timer;
   if (encoder_ == nullptr) {
     return;
   }
@@ -1384,17 +1391,19 @@ void WebGPUContext::present_backbuffer(int w, int h)
     s_frame++;
 #ifdef __EMSCRIPTEN__
     {
-      static double s_acc_ms = 0.0, s_max_ms = 0.0;
+      static double s_acc_ms = 0.0, s_max_ms = 0.0, s_acc_api = 0.0;
       static int s_acc_n = 0;
       s_acc_ms += frame_ms;
+      s_acc_api += g_stat_api_ms;
       s_max_ms = std::max(s_max_ms, frame_ms);
       s_acc_n++;
       if (s_acc_n >= 30) {
-        extern int g_stat_tex_count;
-        extern long long g_stat_tex_bytes;
+        extern int g_stat_tex_count, g_stat_imm_buffers;
+        extern long long g_stat_tex_bytes, g_stat_imm_bytes;
         wgpu_perf_post(s_frame, s_acc_ms / s_acc_n, s_max_ms, g_stat_submits, g_stat_passes,
-                       g_stat_bindgroups, g_stat_tex_count, int(g_stat_tex_bytes / (1024 * 1024)));
-        s_acc_ms = s_max_ms = 0.0;
+                       g_stat_bindgroups, g_stat_tex_count, int(g_stat_tex_bytes / (1024 * 1024)),
+                       s_acc_api / s_acc_n, g_stat_imm_buffers, int(g_stat_imm_bytes / 1024));
+        s_acc_ms = s_max_ms = s_acc_api = 0.0;
         s_acc_n = 0;
       }
     }
@@ -1427,6 +1436,9 @@ void WebGPUContext::present_backbuffer(int w, int h)
 #endif
     g_stat_submits = g_stat_passes = g_stat_bindgroups = g_stat_flushes = g_stat_fbswitch =
         g_stat_bg_hits = 0;
+    g_stat_api_ms = 0.0;
+    g_stat_imm_buffers = 0;
+    g_stat_imm_bytes = 0;
   }
   uniform_arena_reset();
 }
