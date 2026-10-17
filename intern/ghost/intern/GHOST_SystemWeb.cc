@@ -15,6 +15,9 @@
 #include "GHOST_EventCursor.hh"
 #include "GHOST_EventKey.hh"
 #include <atomic>
+#include <cstdlib>
+#include <mutex>
+#include <string>
 
 #include "GHOST_EventWheel.hh"
 #include "GHOST_SystemWeb.hh"
@@ -33,6 +36,51 @@ static std::atomic<int> g_pen_active{0};
 static std::atomic<float> g_pen_pressure{1.0f};
 static std::atomic<float> g_pen_xtilt{0.0f};
 static std::atomic<float> g_pen_ytilt{0.0f};
+/* Clipboard. Blender calls these synchronously from its (worker) thread, but the async Clipboard API
+ * lives on the page's main thread. So: an in-process copy (Blender -> Blender always works), mirrored
+ * to navigator.clipboard on put (best effort), and filled from the page's `paste` event
+ * (demo/src/main.js -> blender_web_set_clipboard) for text copied elsewhere. */
+static std::mutex g_web_clip_mutex;
+static std::string g_web_clip;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void blender_web_set_clipboard(const char *text)
+{
+  std::lock_guard<std::mutex> lock(g_web_clip_mutex);
+  g_web_clip = text ? text : "";
+}
+
+char *GHOST_SystemWeb::getClipboard(bool /*selection*/) const
+{
+  std::lock_guard<std::mutex> lock(g_web_clip_mutex);
+  if (g_web_clip.empty()) {
+    return nullptr;
+  }
+  char *buf = static_cast<char *>(malloc(g_web_clip.size() + 1));
+  memcpy(buf, g_web_clip.c_str(), g_web_clip.size() + 1);
+  return buf;
+}
+
+void GHOST_SystemWeb::putClipboard(const char *buffer, bool /*selection*/) const
+{
+  if (!buffer) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_web_clip_mutex);
+    g_web_clip = buffer;
+  }
+  char *copy = strdup(buffer); /* freed on the main thread below */
+  MAIN_THREAD_ASYNC_EM_ASM(
+      {
+        const t = UTF8ToString($0);
+        _free($0);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(t).catch(() => {});
+        }
+      },
+      copy);
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void blender_web_pen(int active,
                                                      float pressure,
                                                      float xtilt,

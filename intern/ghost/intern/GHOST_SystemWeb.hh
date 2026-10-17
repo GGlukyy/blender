@@ -55,11 +55,8 @@ class GHOST_SystemWeb : public GHOST_System {
           GHOST_kCapabilityWindowDecorationStyles | GHOST_kCapabilityKeyboardHyperKey |
           GHOST_kCapabilityCursorRGBA | GHOST_kCapabilityCursorGenerator));
   }
-  char *getClipboard(bool /*selection*/) const override
-  {
-    return nullptr;
-  }
-  void putClipboard(const char * /*buffer*/, bool /*selection*/) const override {}
+  char *getClipboard(bool selection) const override;
+  void putClipboard(const char *buffer, bool selection) const override;
 
   uint64_t getMilliSeconds() const override;
 
