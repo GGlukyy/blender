@@ -92,6 +92,10 @@
 
 #include "ANIM_armature.hh"
 
+#ifdef __EMSCRIPTEN__
+#  include "ED_mesh_web_occl.hh"
+#endif
+
 #include "view3d_intern.hh" /* own include */
 
 /* WEB (WebGPU) build: GPU select-ID / depth buffers cannot be read back synchronously yet
@@ -432,6 +436,38 @@ static bool edbm_backbuf_check_and_select_faces_obmode(Mesh *mesh,
 /** \name Lasso Select
  * \{ */
 
+#ifdef __EMSCRIPTEN__
+/* Web Solid-mode box/lasso/circle select: GPU select buffer unavailable, so occluded edit-mesh
+ * elements are rejected with CPU ray casts (#WebOccl, one object). Null \a occ = no test (X-Ray). */
+static bool web_occ_vert_ok(const WebOccl *occ, BMVert *eve, const float screen_co[2])
+{
+  return !occ || occ->point_visible(0, eve->co, screen_co, eve, nullptr);
+}
+static bool web_occ_edge_ok(const WebOccl *occ,
+                            BMEdge *eed,
+                            const float screen_co_a[2],
+                            const float screen_co_b[2])
+{
+  if (!occ) {
+    return true;
+  }
+  return occ->point_visible(0,
+                            math::midpoint(float3(eed->v1->co), float3(eed->v2->co)),
+                            math::midpoint(float2(screen_co_a), float2(screen_co_b)),
+                            nullptr,
+                            eed);
+}
+static bool web_occ_face_ok(const WebOccl *occ, BMFace *efa, const float screen_co[2])
+{
+  if (!occ) {
+    return true;
+  }
+  float3 center;
+  BM_face_calc_center_median(efa, center);
+  return occ->point_visible(0, center, screen_co, nullptr, nullptr, efa);
+}
+#endif /* __EMSCRIPTEN__ */
+
 struct LassoSelectUserData {
   const ViewContext *vc;
   const rcti *rect;
@@ -440,6 +476,11 @@ struct LassoSelectUserData {
   Span<int2> mcoords;
   eSelectOp sel_op;
   eBezTriple_Flag select_flag;
+
+#ifdef __EMSCRIPTEN__
+  /** Web Solid mode: occlusion test, null when X-Ray. */
+  const WebOccl *occ = nullptr;
+#endif
 
   /** Only for edit-mesh selection. */
   UVSyncSelectFromMesh *uv_selctx = nullptr;
@@ -731,9 +772,14 @@ static void do_lasso_select_mesh__doSelectVert(void *user_data,
 {
   LassoSelectUserData *data = static_cast<LassoSelectUserData *>(user_data);
   const bool is_select = BM_elem_flag_test(eve, BM_ELEM_SELECT);
-  const bool is_inside = (BLI_rctf_isect_pt_v(data->rect_fl, screen_co) &&
+  bool is_inside = (BLI_rctf_isect_pt_v(data->rect_fl, screen_co) &&
                           BLI_lasso_is_point_inside(
                               data->mcoords, screen_co[0], screen_co[1], IS_CLIPPED));
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_vert_ok(data->occ, eve, screen_co)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_vert_select_set(data->vc->em->bm, eve, sel_op_result);
@@ -765,10 +811,15 @@ static void do_lasso_select_mesh__doSelectEdge_pass0(void *user_data,
   }
 
   const bool is_select = BM_elem_flag_test(eed, BM_ELEM_SELECT);
-  const bool is_inside =
+  bool is_inside =
       (is_visible && edge_fully_inside_rect(data->rect_fl, screen_co_a, screen_co_b) &&
        BLI_lasso_is_point_inside(data->mcoords, UNPACK2(screen_co_a), IS_CLIPPED) &&
        BLI_lasso_is_point_inside(data->mcoords, UNPACK2(screen_co_b), IS_CLIPPED));
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_edge_ok(data->occ, eed, screen_co_a, screen_co_b)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_edge_select_set(data->vc->em->bm, eed, sel_op_result);
@@ -796,10 +847,15 @@ static void do_lasso_select_mesh__doSelectEdge_pass1(void *user_data,
   }
 
   const bool is_select = BM_elem_flag_test(eed, BM_ELEM_SELECT);
-  const bool is_inside = (is_visible && BLI_lasso_is_edge_inside(data->mcoords,
+  bool is_inside = (is_visible && BLI_lasso_is_edge_inside(data->mcoords,
                                                                  UNPACK2(screen_co_a),
                                                                  UNPACK2(screen_co_b),
                                                                  IS_CLIPPED));
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_edge_ok(data->occ, eed, screen_co_a, screen_co_b)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_edge_select_set(data->vc->em->bm, eed, sel_op_result);
@@ -818,9 +874,14 @@ static void do_lasso_select_mesh__doSelectFace(void *user_data,
 {
   LassoSelectUserData *data = static_cast<LassoSelectUserData *>(user_data);
   const bool is_select = BM_elem_flag_test(efa, BM_ELEM_SELECT);
-  const bool is_inside = (BLI_rctf_isect_pt_v(data->rect_fl, screen_co) &&
+  bool is_inside = (BLI_rctf_isect_pt_v(data->rect_fl, screen_co) &&
                           BLI_lasso_is_point_inside(
                               data->mcoords, screen_co[0], screen_co[1], IS_CLIPPED));
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_face_ok(data->occ, efa, screen_co)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_face_select_set(data->vc->em->bm, efa, sel_op_result);
@@ -846,6 +907,14 @@ static bool do_lasso_select_mesh(const ViewContext *vc,
   BLI_lasso_boundbox(&rect, mcoords);
 
   view3d_userdata_lassoselect_init(&data, vc, &rect, mcoords, sel_op);
+#ifdef __EMSCRIPTEN__
+  std::optional<WebOccl> web_occ;
+  if (!XRAY_FLAG_ENABLED(vc->v3d)) {
+    Object *web_ob = vc->obedit;
+    web_occ.emplace(vc, Span<Object *>(&web_ob, 1));
+    data.occ = &*web_occ;
+  }
+#endif
 
   if (SEL_OP_USE_PRE_DESELECT(sel_op)) {
     if (vc->em->bm->totvertsel) {
@@ -3712,6 +3781,11 @@ struct BoxSelectUserData {
   eSelectOp sel_op;
   eBezTriple_Flag select_flag;
 
+#ifdef __EMSCRIPTEN__
+  /** Web Solid mode: occlusion test, null when X-Ray. */
+  const WebOccl *occ = nullptr;
+#endif
+
   /** Only for edit-mesh selection. */
   UVSyncSelectFromMesh *uv_selctx;
 
@@ -3974,7 +4048,12 @@ static void do_mesh_box_select__doSelectVert(void *user_data,
 {
   BoxSelectUserData *data = static_cast<BoxSelectUserData *>(user_data);
   const bool is_select = BM_elem_flag_test(eve, BM_ELEM_SELECT);
-  const bool is_inside = BLI_rctf_isect_pt_v(data->rect_fl, screen_co);
+  bool is_inside = BLI_rctf_isect_pt_v(data->rect_fl, screen_co);
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_vert_ok(data->occ, eve, screen_co)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_vert_select_set(data->vc->em->bm, eve, sel_op_result);
@@ -4009,8 +4088,13 @@ static void do_mesh_box_select__doSelectEdge_pass0(void *user_data,
   }
 
   const bool is_select = BM_elem_flag_test(eed, BM_ELEM_SELECT);
-  const bool is_inside = (is_visible &&
+  bool is_inside = (is_visible &&
                           edge_fully_inside_rect(data->rect_fl, screen_co_a, screen_co_b));
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_edge_ok(data->occ, eed, screen_co_a, screen_co_b)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_edge_select_set(data->vc->em->bm, eed, sel_op_result);
@@ -4041,7 +4125,12 @@ static void do_mesh_box_select__doSelectEdge_pass1(void *user_data,
   }
 
   const bool is_select = BM_elem_flag_test(eed, BM_ELEM_SELECT);
-  const bool is_inside = (is_visible && edge_inside_rect(data->rect_fl, screen_co_a, screen_co_b));
+  bool is_inside = (is_visible && edge_inside_rect(data->rect_fl, screen_co_a, screen_co_b));
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_edge_ok(data->occ, eed, screen_co_a, screen_co_b)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_edge_select_set(data->vc->em->bm, eed, sel_op_result);
@@ -4059,7 +4148,12 @@ static void do_mesh_box_select__doSelectFace(void *user_data,
 {
   BoxSelectUserData *data = static_cast<BoxSelectUserData *>(user_data);
   const bool is_select = BM_elem_flag_test(efa, BM_ELEM_SELECT);
-  const bool is_inside = BLI_rctf_isect_pt_v(data->rect_fl, screen_co);
+  bool is_inside = BLI_rctf_isect_pt_v(data->rect_fl, screen_co);
+#ifdef __EMSCRIPTEN__
+  if (is_inside && !web_occ_face_ok(data->occ, efa, screen_co)) {
+    is_inside = false;
+  }
+#endif
   const int sel_op_result = ED_select_op_action_deselected(data->sel_op, is_select, is_inside);
   if (sel_op_result != -1) {
     BM_face_select_set(data->vc->em->bm, efa, sel_op_result);
@@ -4079,6 +4173,14 @@ static bool do_mesh_box_select(const ViewContext *vc,
   ToolSettings *ts = vc->scene->toolsettings;
 
   view3d_userdata_boxselect_init(&data, vc, rect, sel_op);
+#ifdef __EMSCRIPTEN__
+  std::optional<WebOccl> web_occ;
+  if (!XRAY_FLAG_ENABLED(vc->v3d)) {
+    Object *web_ob = vc->obedit;
+    web_occ.emplace(vc, Span<Object *>(&web_ob, 1));
+    data.occ = &*web_occ;
+  }
+#endif
 
   if (SEL_OP_USE_PRE_DESELECT(sel_op)) {
     if (vc->em->bm->totvertsel) {
@@ -4723,6 +4825,11 @@ struct CircleSelectUserData {
   float radius_squared;
   eBezTriple_Flag select_flag;
 
+#ifdef __EMSCRIPTEN__
+  /** Web Solid mode: occlusion test, null when X-Ray. */
+  const WebOccl *occ = nullptr;
+#endif
+
   /** Only for edit-mesh selection. */
   UVSyncSelectFromMesh *uv_selctx = nullptr;
 
@@ -4759,7 +4866,12 @@ static void mesh_circle_doSelectVert(void *user_data,
 {
   CircleSelectUserData *data = static_cast<CircleSelectUserData *>(user_data);
 
-  if (len_squared_v2v2(data->mval_fl, screen_co) <= data->radius_squared) {
+  if (len_squared_v2v2(data->mval_fl, screen_co) <= data->radius_squared
+#ifdef __EMSCRIPTEN__
+      && web_occ_vert_ok(data->occ, eve, screen_co)
+#endif
+  )
+  {
     BM_vert_select_set(data->vc->em->bm, eve, data->select);
     if (data->uv_selctx) {
       data->uv_selctx->vert_select_set(eve, data->select);
@@ -4776,7 +4888,12 @@ static void mesh_circle_doSelectEdge(void *user_data,
 {
   CircleSelectUserData *data = static_cast<CircleSelectUserData *>(user_data);
 
-  if (edge_inside_circle(data->mval_fl, data->radius, screen_co_a, screen_co_b)) {
+  if (edge_inside_circle(data->mval_fl, data->radius, screen_co_a, screen_co_b)
+#ifdef __EMSCRIPTEN__
+      && web_occ_edge_ok(data->occ, eed, screen_co_a, screen_co_b)
+#endif
+  )
+  {
     BM_edge_select_set(data->vc->em->bm, eed, data->select);
     if (data->uv_selctx) {
       data->uv_selctx->edge_select_set(eed, data->select);
@@ -4792,7 +4909,12 @@ static void mesh_circle_doSelectFace(void *user_data,
 {
   CircleSelectUserData *data = static_cast<CircleSelectUserData *>(user_data);
 
-  if (len_squared_v2v2(data->mval_fl, screen_co) <= data->radius_squared) {
+  if (len_squared_v2v2(data->mval_fl, screen_co) <= data->radius_squared
+#ifdef __EMSCRIPTEN__
+      && web_occ_face_ok(data->occ, efa, screen_co)
+#endif
+  )
+  {
     BM_face_select_set(data->vc->em->bm, efa, data->select);
     if (data->uv_selctx) {
       data->uv_selctx->face_select_set(efa, data->select);
@@ -4826,6 +4948,14 @@ static bool mesh_circle_select(const ViewContext *vc,
   std::unique_ptr<UVSyncSelectFromMesh> uv_selctx = UVSyncSelectFromMesh::create_if_needed(
       *ts, *vc->em->bm);
   data.uv_selctx = uv_selctx.get();
+#ifdef __EMSCRIPTEN__
+  std::optional<WebOccl> web_occ;
+  if (!XRAY_FLAG_ENABLED(vc->v3d)) {
+    Object *web_ob = vc->obedit;
+    web_occ.emplace(vc, Span<Object *>(&web_ob, 1));
+    data.occ = &*web_occ;
+  }
+#endif
 
   const bool select = (sel_op != SEL_OP_SUB);
 

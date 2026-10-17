@@ -47,6 +47,9 @@
 #include "RNA_enum_types.hh"
 
 #include "ED_mesh.hh"
+#ifdef __EMSCRIPTEN__
+#  include "ED_mesh_web_occl.hh"
+#endif
 #include "ED_object.hh"
 #include "ED_screen.hh"
 #include "ED_select_utils.hh"
@@ -390,147 +393,15 @@ static BMElem *edbm_select_id_bm_elem_get(const Span<Base *> bases,
 /** \} */
 
 #ifdef __EMSCRIPTEN__
-/* -------------------------------------------------------------------- */
-/** \name Web: CPU occlusion for Solid-mode picking
- * \{ */
-
-/** Faces adjacent to the tested element never occlude it. */
-struct WebOccExclude {
-  const BMVert *vert;
-  const BMEdge *edge;
-};
-
-static bool web_occ_face_filter(BMFace *f, void *user_data)
+static blender::Vector<blender::Object *> web_occ_objects(const blender::Span<blender::Base *> bases)
 {
-  const WebOccExclude *ex = static_cast<const WebOccExclude *>(user_data);
-  if (ex->vert && BM_vert_in_face(const_cast<BMVert *>(ex->vert), f)) {
-    return false;
+  blender::Vector<blender::Object *> r;
+  for (blender::Base *b : bases) {
+    r.append(b->object);
   }
-  if (ex->edge && BM_edge_in_face(const_cast<BMEdge *>(ex->edge), f)) {
-    return false;
-  }
-  return true;
+  return r;
 }
-
-/** One BVH per edit-mode base, built per pick (cheap for modeling-sized meshes). */
-struct WebOccl {
-  struct Tree {
-    BMBVHTree *bvh;
-    float4x4 obmat;
-    float4x4 obinv;
-  };
-  ViewContext *vc;
-  Vector<Tree> trees;
-
-  WebOccl(ViewContext *vc_, const Span<Base *> bases) : vc(vc_)
-  {
-    for (Base *base : bases) {
-      BMEditMesh *em = BKE_editmesh_from_object(base->object);
-      Tree t;
-      t.bvh = em ? BKE_bmbvh_new_from_editmesh(em, BMBVH_RESPECT_HIDDEN, nullptr, false) : nullptr;
-      t.obmat = base->object->object_to_world();
-      t.obinv = math::invert(t.obmat);
-      trees.append(t);
-    }
-  }
-  ~WebOccl()
-  {
-    for (Tree &t : trees) {
-      if (t.bvh) {
-        BKE_bmbvh_free(t.bvh);
-      }
-    }
-  }
-
-  /** Is the object-space point \a co_obj of tree \a tree_i, drawn at \a screen_co, visible? */
-  bool point_visible(const int tree_i,
-                     const float3 &co_obj,
-                     const float2 &screen_co,
-                     const BMVert *vert,
-                     const BMEdge *edge) const
-  {
-    float start[3], end[3];
-    if (!ED_view3d_win_to_segment_clipped(
-            vc->depsgraph, vc->region, vc->v3d, screen_co, start, end, true))
-    {
-      return true;
-    }
-    const float3 co_world = math::transform_point(trees[tree_i].obmat, co_obj);
-    const float3 to_eye = float3(start) - co_world;
-    const float len = math::length(to_eye);
-    if (len < 1e-9f) {
-      return true;
-    }
-    /* Start a little off the surface so the element's own neighbourhood is not re-hit. */
-    const float3 origin_world = co_world + to_eye * 1e-4f;
-    const float3 eye_world = float3(start);
-
-    for (const int i : trees.index_range()) {
-      if (!trees[i].bvh) {
-        continue;
-      }
-      const float3 o = math::transform_point(trees[i].obinv, origin_world);
-      const float3 e = math::transform_point(trees[i].obinv, eye_world);
-      float3 dir = e - o;
-      float dist = math::length(dir);
-      if (dist < 1e-9f) {
-        continue;
-      }
-      dir /= dist;
-      WebOccExclude ex = {i == tree_i ? vert : nullptr, i == tree_i ? edge : nullptr};
-      if (BKE_bmbvh_ray_cast_filter(
-              trees[i].bvh, o, dir, 0.0f, &dist, nullptr, nullptr, web_occ_face_filter, &ex))
-      {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /** The frontmost face under the cursor (all trees); sets \a r_tree. */
-  BMFace *face_under_cursor(const float2 &mval, int &r_tree) const
-  {
-    float start[3], end[3];
-    if (!ED_view3d_win_to_segment_clipped(
-            vc->depsgraph, vc->region, vc->v3d, mval, start, end, true))
-    {
-      return nullptr;
-    }
-    BMFace *best = nullptr;
-    float best_dist = FLT_MAX;
-    for (const int i : trees.index_range()) {
-      if (!trees[i].bvh) {
-        continue;
-      }
-      const float3 o = math::transform_point(trees[i].obinv, float3(start));
-      const float3 e = math::transform_point(trees[i].obinv, float3(end));
-      float3 dir = e - o;
-      const float len = math::length(dir);
-      if (len < 1e-9f) {
-        continue;
-      }
-      dir /= len;
-      float dist = FLT_MAX;
-      float3 hit;
-      BMFace *f = BKE_bmbvh_ray_cast(trees[i].bvh, o, dir, 0.0f, &dist, hit, nullptr);
-      if (f) {
-        /* Compare in world space (object scale may differ between bases). */
-        const float d = math::distance(math::transform_point(trees[i].obmat, hit),
-                                       float3(start));
-        if (d < best_dist) {
-          best_dist = d;
-          best = f;
-          r_tree = i;
-        }
-      }
-    }
-    return best;
-  }
-};
-
-/** \} */
-
-#endif /* __EMSCRIPTEN__ */
+#endif
 
 /* -------------------------------------------------------------------- */
 /** \name Find Nearest Vert/Edge/Face
@@ -670,7 +541,7 @@ BMVert *EDBM_vert_find_nearest_ex(ViewContext *vc,
 #ifdef __EMSCRIPTEN__
   std::optional<WebOccl> web_occ;
   if (!XRAY_FLAG_ENABLED(vc->v3d)) {
-    web_occ.emplace(vc, bases);
+    web_occ.emplace(vc, web_occ_objects(bases));
     data.occ = &*web_occ;
   }
 #endif
@@ -949,7 +820,7 @@ BMEdge *EDBM_edge_find_nearest_ex(ViewContext *vc,
 #ifdef __EMSCRIPTEN__
   std::optional<WebOccl> web_occ;
   if (!XRAY_FLAG_ENABLED(vc->v3d)) {
-    web_occ.emplace(vc, bases);
+    web_occ.emplace(vc, web_occ_objects(bases));
     data.occ = &*web_occ;
   }
 #endif
@@ -1104,7 +975,7 @@ BMFace *EDBM_face_find_nearest_ex(ViewContext *vc,
     UNUSED_VARS(use_zbuf_single_px, index);
     {
       /* No select-ID buffer on web: the frontmost face under the cursor via editmesh BVH ray cast. */
-      const WebOccl occ(vc, bases);
+      const WebOccl occ(vc, web_occ_objects(bases));
       int tree = 0;
       efa = occ.face_under_cursor(float2(vc->mval[0], vc->mval[1]), tree);
       index = 0;
