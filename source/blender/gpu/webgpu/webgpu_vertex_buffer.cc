@@ -107,7 +107,7 @@ void WebGPUVertexBuffer::upload_data()
   if (buffer_ && ctx && ctx->queue() && data_) {
     const size_t used = this->size_used_get();
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, (used + 3) & ~size_t(3));
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, (used + 3) & ~size_t(3));
   }
 }
 
@@ -122,13 +122,13 @@ void WebGPUVertexBuffer::update_sub(uint start, uint len, const void *data)
   if (buffer_ && ctx && ctx->queue()) {
     if (cow_if_pass_open(ctx)) {
       /* Fresh buffer: upload the FULL shadow (it includes this sub-range). */
-      wgpuQueueWriteBuffer(
+      wgpu_counted_write(
           ctx->queue(), buffer_, 0, data_, (this->size_used_get() + 3) & ~size_t(3));
     }
     else {
       /* No shadow to rebuild from: preserve GL ordering the expensive way. */
       ctx->flush_if_pass_open("vbo_sub");
-      wgpuQueueWriteBuffer(ctx->queue(), buffer_, start, data, (len + 3) & ~size_t(3));
+      wgpu_counted_write(ctx->queue(), buffer_, start, data, (len + 3) & ~size_t(3));
     }
   }
 }

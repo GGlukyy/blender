@@ -68,7 +68,7 @@ void WebGPUIndexBuf::upload_data()
   }
   if (buffer_ && ctx && ctx->queue() && data_) {
     ctx->flush_if_pass_open("ibo");
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, (this->size_get() + 3) & ~size_t(3));
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, (this->size_get() + 3) & ~size_t(3));
     uploaded_ = true;
   }
 }
@@ -101,7 +101,7 @@ void WebGPUIndexBuf::update_sub(uint start, uint len, const void *data)
   ensure_buffer();
   WebGPUContext *ctx = WebGPUContext::get();
   if (buffer_ && ctx && ctx->queue()) {
-    ctx->flush_if_pass_open("ibo_sub"); wgpuQueueWriteBuffer(ctx->queue(), buffer_, start, data, (len + 3) & ~size_t(3));
+    ctx->flush_if_pass_open("ibo_sub"); wgpu_counted_write(ctx->queue(), buffer_, start, data, (len + 3) & ~size_t(3));
   }
 }
 

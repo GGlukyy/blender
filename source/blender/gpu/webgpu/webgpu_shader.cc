@@ -1322,7 +1322,7 @@ bool WebGPUShader::push_const_slice(WGPUBuffer &r_buf, uint64_t &r_off, uint64_t
     if (!ctx->uniform_arena_alloc(push_const_size_, buf, off)) {
       return false;
     }
-    wgpuQueueWriteBuffer(ctx->queue(), buf, off, push_const_data_, push_const_size_);
+    wgpu_counted_write(ctx->queue(), buf, off, push_const_data_, push_const_size_);
     wgpuBufferAddRef(buf);
     if (pc_slice_buf_) {
       wgpuBufferRelease(pc_slice_buf_);

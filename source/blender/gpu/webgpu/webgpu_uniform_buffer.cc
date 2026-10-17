@@ -57,7 +57,7 @@ void WebGPUUniformBuf::ensure_buffer()
   desc.mappedAtCreation = false;
   buffer_ = wgpuDeviceCreateBuffer(ctx->device(), &desc);
   if (buffer_) {
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
   }
 }
 
@@ -104,7 +104,7 @@ void WebGPUUniformBuf::update(const void *data)
      * per widget draw (the UI updates a UBO per widget — pathological). A fresh
      * buffer isolates old draws (they hold refs via their bind groups). */
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
     dirty_ = false;
   }
   else {
@@ -123,7 +123,7 @@ void WebGPUUniformBuf::clear_to_zero()
   WebGPUContext *ctx = ctx_get();
   if (buffer_ && ctx && ctx->queue()) {
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
   }
 }
 
@@ -134,7 +134,7 @@ void WebGPUUniformBuf::bind(int slot)
   WebGPUContext *ctx = ctx_get();
   if (dirty_ && buffer_ && data_ && ctx && ctx->queue()) {
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
     dirty_ = false;
   }
   if (ctx) {
@@ -150,7 +150,7 @@ void WebGPUUniformBuf::bind_as_ssbo(int slot)
   WebGPUContext *ctx = ctx_get();
   if (dirty_ && buffer_ && data_ && ctx && ctx->queue()) {
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
     dirty_ = false;
   }
   if (ctx) {

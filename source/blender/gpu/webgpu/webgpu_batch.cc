@@ -425,7 +425,7 @@ static WGPUBuffer point_quad_index_buffer(WebGPUContext *ctx, uint32_t points)
     s_buf = wgpuDeviceCreateBuffer(ctx->device(), &bd);
     s_dev = ctx->device();
     if (s_buf) {
-      wgpuQueueWriteBuffer(ctx->queue(), s_buf, 0, idx.data(), bd.size);
+      wgpu_counted_write(ctx->queue(), s_buf, 0, idx.data(), bd.size);
     }
   }
   return s_buf;
@@ -739,7 +739,7 @@ void WebGPUBatch::record_draw(int vertex_first,
           pe.bufs[i] = wgpuDeviceCreateBuffer(ctx->device(), &bd);
           if (pe.bufs[i]) {
             dst.resize(bd.size);
-            wgpuQueueWriteBuffer(ctx->queue(), pe.bufs[i], 0, dst.data(), dst.size());
+            wgpu_counted_write(ctx->queue(), pe.bufs[i], 0, dst.data(), dst.size());
           }
           pe.vbo_gens[i] = {vs, vs->gen()};
         }

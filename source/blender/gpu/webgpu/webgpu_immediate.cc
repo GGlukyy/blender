@@ -85,7 +85,7 @@ void WebGPUImmediate::end()
   if (buf == nullptr) {
     return;
   }
-  wgpuQueueWriteBuffer(ctx->queue(), buf, 0, data_.data(), buf_size);
+  wgpu_counted_write(ctx->queue(), buf, 0, data_.data(), buf_size);
 
   if (shader->is_polyline) {
     /* Polyline shaders read positions/colors from SSBOs and expand to triangles

@@ -63,7 +63,7 @@ void WebGPUStorageBuf::ensure_buffer()
   /* Upload whatever the CPU shadow currently holds (fresh buffer — a queued
    * write cannot affect recorded work, no flush needed). */
   if (buffer_) {
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
   }
 }
 
@@ -106,7 +106,7 @@ void WebGPUStorageBuf::update(const void *data)
   WebGPUContext *ctx = webgpu_context_get();
   if (buffer_ && ctx && ctx->queue()) {
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
     dirty_ = false;
   }
   else {
@@ -123,7 +123,7 @@ void WebGPUStorageBuf::bind(int slot)
   WebGPUContext *ctx = webgpu_context_get();
   if (dirty_ && buffer_ && data_ && ctx && ctx->queue()) {
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
     dirty_ = false;
   }
   /* Record into the context binding table; the bind group is assembled at
@@ -156,7 +156,7 @@ void WebGPUStorageBuf::clear(uint32_t clear_value)
   WebGPUContext *ctx = webgpu_context_get();
   if (buffer_ && ctx && ctx->queue()) {
     cow_if_pass_open(ctx);
-    wgpuQueueWriteBuffer(ctx->queue(), buffer_, 0, data_, alloc_size_);
+    wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
   }
 }
 

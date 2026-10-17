@@ -27,6 +27,16 @@
 
 #include <emscripten/emscripten.h>
 
+/* Perf counters for buffer uploads (all queue writes go through wgpu_counted_write). */
+inline long long g_stat_writes = 0, g_stat_write_bytes = 0, g_stat_write_big = 0;
+inline void wgpu_counted_write(WGPUQueue q, WGPUBuffer b, uint64_t off, const void *d, size_t n)
+{
+  g_stat_writes++;
+  g_stat_write_bytes += n;
+  g_stat_write_big += (n > 65536);
+  wgpuQueueWriteBuffer(q, b, off, d, n);
+}
+
 namespace blender::gpu {
 
 /** ?perf=1 telemetry: wall time spent in WebGPU API recording/submission per frame (outermost

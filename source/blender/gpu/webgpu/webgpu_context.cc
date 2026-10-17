@@ -1416,7 +1416,7 @@ void WebGPUContext::present_backbuffer(int w, int h)
     if (s_frame <= 8 || (s_frame % 60) == 0 || frame_ms > 25.0) {
       fprintf(stderr,
               "WGPU_STATS frame=%d dt=%.1fms submits=%d passes=%d bindgroups=%d bg_hits=%d "
-              "guard_flushes=%d fb_switches=%d tex=%d/%lldMB\n",
+              "guard_flushes=%d fb_switches=%d tex=%d/%lldMB writes=%lld/%lldKB big=%lld\n",
               s_frame,
               frame_ms,
               g_stat_submits,
@@ -1426,7 +1426,10 @@ void WebGPUContext::present_backbuffer(int w, int h)
               g_stat_flushes,
               g_stat_fbswitch,
               [] { extern int g_stat_tex_count; return g_stat_tex_count; }(),
-              [] { extern long long g_stat_tex_bytes; return g_stat_tex_bytes / (1024 * 1024); }());
+              [] { extern long long g_stat_tex_bytes; return g_stat_tex_bytes / (1024 * 1024); }(),
+              g_stat_writes,
+              g_stat_write_bytes / 1024,
+              g_stat_write_big);
       extern void webgpu_stat_flush_dump();
       webgpu_stat_flush_dump();
     }
