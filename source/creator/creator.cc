@@ -390,6 +390,12 @@ int main(int argc,
   if (getenv("BLENDER_WEB_ASSET_PROVIDER") && !g_web_device_ready) {
     g_web_bargc = argc;
     g_web_bargv = argv;
+    /* Test aid (P3): WGPU_CAP_MAX_BUFFER / WGPU_CAP_MAX_SSBO (bytes) clamp the device limits to what
+     * iPad Safari offers (~268435456 / 134217728), to reproduce its high-poly limits on a desktop GPU. */
+    const char *cap_buf_env = getenv("WGPU_CAP_MAX_BUFFER");
+    const char *cap_ssbo_env = getenv("WGPU_CAP_MAX_SSBO");
+    const double cap_buf = cap_buf_env ? atof(cap_buf_env) : 0.0;
+    const double cap_ssbo = cap_ssbo_env ? atof(cap_ssbo_env) : 0.0;
     EM_ASM({
       (async () => {
         try {
@@ -414,6 +420,13 @@ int main(int argc,
             const v = adapter.limits[k];
             if (v !== undefined) requiredLimits[k] = v;
           }
+          if ($0 > 0) requiredLimits.maxBufferSize = Math.min(requiredLimits.maxBufferSize, $0);
+          if ($1 > 0) {
+            requiredLimits.maxStorageBufferBindingSize =
+                Math.min(requiredLimits.maxStorageBufferBindingSize, $1);
+          }
+          console.log("WGPU_LIMITS maxBufferSize=" + requiredLimits.maxBufferSize +
+                      " maxStorageBufferBindingSize=" + requiredLimits.maxStorageBufferBindingSize);
           Module["preinitializedWebGPUDevice"] =
               await adapter.requestDevice({ requiredFeatures, requiredLimits });
           _blender_web_device_ready();
@@ -424,7 +437,7 @@ int main(int argc,
           if (e !== "unwind") console.error("pthread WebGPU device acquire failed:", e);
         }
       })();
-    });
+    }, cap_buf, cap_ssbo);
     emscripten_exit_with_live_runtime();
     return 0;
   }
