@@ -1767,6 +1767,10 @@ void wm_draw_update(bContext *C)
       wm_draw_update_clear_window(C, &win);
 
       wm_window_swap_buffer_release(&win);
+#ifdef __EMSCRIPTEN__
+      /* Gizmo highlight can resolve during the draw: publish again so the touch layer sees it. */
+      wm_web_publish_viewports(&win);
+#endif
       PRF_frame_mark_end("Window Drawing"_ustr);
     }
   }
