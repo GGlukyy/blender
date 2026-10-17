@@ -496,6 +496,14 @@ void ED_region_do_draw(bContext *C, ARegion *region)
     return;
   }
 
+#ifdef __EMSCRIPTEN__
+  {
+    static const bool log_regions = getenv("WGPU_REGIONLOG") != nullptr;
+    if (log_regions) {
+      fprintf(stderr, "REGDRAW area=%d region=%d\n", area ? int(area->spacetype) : -1, int(region->regiontype));
+    }
+  }
+#endif
   region->runtime->do_draw |= RGN_DRAWING;
 
   /* Set viewport, scissor, ortho and region->runtime->drawrct. */
