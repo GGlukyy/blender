@@ -508,6 +508,23 @@ static std::string webgpu_glsl_patch(const char *stage_define)
  * Keys: "v1:<stage>:<fnv1a64 of the joined GLSL>". The version salt must be
  * bumped whenever the translator or the GLSL patching changes output. */
 EM_JS(int, wgpu_wgsl_cache_query, (const char *key), {
+  /* Blender runs on a PROXY_TO_PTHREAD worker: the page's globalThis (where main.js builds
+   * __WGSL_CACHE__) is NOT this global, so load the shipped seed here, once, with a synchronous
+   * XHR (allowed in workers). The worker script is blender.js, the seed sits next to it. */
+  if (globalThis.__WGSL_CACHE__ === undefined && !globalThis.__WGSL_SEED_TRIED__) {
+    globalThis.__WGSL_SEED_TRIED__ = true;
+    try {
+      const x = new XMLHttpRequest();
+      x.open("GET", new URL("wgsl-cache.json", globalThis.location.href).href, false);
+      x.send();
+      if (x.status === 200) {
+        globalThis.__WGSL_CACHE__ = new Map(JSON.parse(x.responseText));
+        console.log("WGSL seed loaded: " + globalThis.__WGSL_CACHE__.size + " shaders");
+      }
+    } catch (e) {
+      console.log("WGSL seed load failed: " + e);
+    }
+  }
   const m = globalThis.__WGSL_CACHE__;
   if (!m) {
     return -1;
@@ -523,7 +540,7 @@ EM_JS(void, wgpu_wgsl_cache_fetch, (char *buf, int buf_len), {
   stringToUTF8(globalThis.__WGSL_CACHE_HIT__, buf, buf_len);
   globalThis.__WGSL_CACHE_HIT__ = undefined;
 });
-EM_JS(void, wgpu_wgsl_cache_put, (const char *key, const char *val), {
+EM_JS(void, wgpu_wgsl_cache_put, (const char *key, const char *val, int export_log), {
   let m = globalThis.__WGSL_CACHE__;
   if (!m) {
     m = globalThis.__WGSL_CACHE__ = new Map();
@@ -531,6 +548,13 @@ EM_JS(void, wgpu_wgsl_cache_put, (const char *key, const char *val), {
   const k = UTF8ToString(key);
   const v = UTF8ToString(val);
   m.set(k, v);
+  /* WGPU_WGSL_EXPORT=1: scripts/wgsl_seed_win.mjs rebuilds wgsl-cache.json from these lines. */
+  if (export_log) {
+    console.log("WGSL_EXPORT " + JSON.stringify([k, v]));
+  }
+  else {
+    console.log("WGSL_MISS " + k);  /* cache miss = a translation happened (counted by the P1 test) */
+  }
   if (globalThis.__WGSL_CACHE_PUT__) {
     globalThis.__WGSL_CACHE_PUT__(k, v);
   }
@@ -568,7 +592,7 @@ static void wgsl_cache_store(const char *stage, const std::string &glsl, const s
   if (wgsl.empty()) {
     return;
   }
-  wgpu_wgsl_cache_put(wgsl_cache_key(stage, glsl).c_str(), wgsl.c_str());
+  wgpu_wgsl_cache_put(wgsl_cache_key(stage, glsl).c_str(), wgsl.c_str(), getenv("WGPU_WGSL_EXPORT") != nullptr);
 }
 #endif /* __EMSCRIPTEN__ */
 
