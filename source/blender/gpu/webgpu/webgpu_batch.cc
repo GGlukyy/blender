@@ -1179,7 +1179,25 @@ void WebGPUBatch::record_draw(int vertex_first,
   if (bg) {
     wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
   }
+  /* A VBO may have been re-uploaded (copy-on-write replaces its WGPUBuffer and releases the old
+   * handle) between capturing vb_buffers above and now (bind-group build, pass start, pending
+   * draw buffers). Re-fetch the current handles or SetVertexBuffer gets a released one. */
+  if (!expand_indexed) {
+    for (size_t i = 0; i < vb_buffers.size(); i++) {
+      if (vb_src[i] != nullptr) {
+        WGPUBuffer cur = const_cast<WebGPUVertexBuffer *>(vb_src[i])->wgpu_buffer();
+        if (cur != nullptr) {
+          vb_buffers[i] = cur;
+        }
+      }
+    }
+  }
+  static const bool log_draws = getenv("WGPU_LOG_DRAWS") != nullptr;
   for (size_t i = 0; i < vb_buffers.size(); i++) {
+    if (log_draws) {
+      fprintf(stderr, "DRAWLOG '%s' vb[%zu]=%p src=%p expand=%d/%d\n", shader->name_get().c_str(), i, (void *)vb_buffers[i], (const void *)vb_src[i], int(expand_points), int(expand_indexed));
+      fflush(stderr);
+    }
     wgpuRenderPassEncoderSetVertexBuffer(pass, uint32_t(i), vb_buffers[i], 0, WGPU_WHOLE_SIZE);
   }
 
