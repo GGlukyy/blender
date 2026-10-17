@@ -6,6 +6,7 @@
  * \ingroup creator
  */
 
+#include <cstdio>
 #include <cstdlib>
 #ifdef __EMSCRIPTEN__
 #  include <emscripten.h>
@@ -30,6 +31,12 @@ int main(int argc, const char **argv); /* forward decl for the re-entry below */
 static int g_web_bargc = 0;
 static const char **g_web_bargv = nullptr;
 static bool g_web_device_ready = false;
+extern "C" EMSCRIPTEN_KEEPALIVE void blender_web_device_lost()
+{
+  /* stderr is forwarded to the page (Module.printErr) — demo/src/main.js scan() shows a banner. */
+  fprintf(stderr, "WEBGPU_LOST device lost\n");
+  fflush(stderr);
+}
 extern "C" EMSCRIPTEN_KEEPALIVE void blender_web_device_ready()
 {
   g_web_device_ready = true;
@@ -429,6 +436,10 @@ int main(int argc,
                       " maxStorageBufferBindingSize=" + requiredLimits.maxStorageBufferBindingSize);
           Module["preinitializedWebGPUDevice"] =
               await adapter.requestDevice({ requiredFeatures, requiredLimits });
+          /* Device loss (iPad memory pressure / app switch) freezes the canvas silently; the page
+           * (demo/src/main.js scan) turns this line into a "GPU lost, reload" banner. */
+          Module["preinitializedWebGPUDevice"].lost.then(
+              (i) => { console.log("WEBGPU_LOST " + i.reason + " " + i.message); _blender_web_device_lost(); });
           _blender_web_device_ready();
         }
         catch (e) {
