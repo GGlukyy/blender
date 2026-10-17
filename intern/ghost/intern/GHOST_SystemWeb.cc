@@ -325,10 +325,23 @@ bool GHOST_SystemWeb::handleKey(int event_type, const EmscriptenKeyboardEvent *e
     return false;
   }
   const GHOST_TKey key = web_key_from_code(e->code);
-  if (key == GHOST_kKeyUnknown) {
+  const bool down = (event_type == EMSCRIPTEN_EVENT_KEYDOWN);
+
+  /* Printable glyph: `key` holding exactly one UTF-8 sequence (ř, š, €, ...). Accepting the whole
+   * sequence (not just ASCII) keeps non-ASCII text typed on the iPad from being dropped. */
+  char utf8[6] = {0};
+  if (down) {
+    const uint8_t lead = uint8_t(e->key[0]);
+    const size_t len = (lead == 0) ? 0 : (lead < 0x80) ? 1 : (lead >= 0xF0) ? 4 : (lead >= 0xE0) ? 3 : (lead >= 0xC0) ? 2 : 0;
+    if (len != 0 && strlen(e->key) == len) {
+      memcpy(utf8, e->key, len);
+    }
+  }
+  /* A key with no known `code` (iOS soft keyboard, non-US layouts) is still text input: let it
+   * through as EVT_UNKNOWNKEY carrying only the UTF-8. */
+  if (key == GHOST_kKeyUnknown && utf8[0] == '\0') {
     return false;
   }
-  const bool down = (event_type == EMSCRIPTEN_EVENT_KEYDOWN);
 
   switch (key) {
     case GHOST_kKeyLeftShift:
@@ -347,11 +360,6 @@ bool GHOST_SystemWeb::handleKey(int event_type, const EmscriptenKeyboardEvent *e
       break;
   }
 
-  char utf8[6] = {0};
-  if (down && e->key[0] != '\0' && e->key[1] == '\0') {
-    /* Single-character `key` value = printable glyph. */
-    utf8[0] = e->key[0];
-  }
   if (getenv("GHOST_LOG_KEYS")) {
     fprintf(stderr,
             "GHOST_KEY %s code='%s' key='%s' ghost=%d utf8='%s'\n",
@@ -368,6 +376,11 @@ bool GHOST_SystemWeb::handleKey(int event_type, const EmscriptenKeyboardEvent *e
                                key,
                                e->repeat,
                                utf8)));
+  if (key == GHOST_kKeyUnknown) {
+    /* No code means no matching key-up either: release it right away. */
+    pushEvent(std::unique_ptr<const GHOST_IEvent>(new GHOST_EventKey(
+        getMilliSeconds(), GHOST_kEventKeyUp, window_, key, false, "")));
+  }
   /* Let the browser keep F5/F11/devtools shortcuts etc. only when unhandled. */
   return true;
 }
