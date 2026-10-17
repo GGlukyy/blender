@@ -757,7 +757,21 @@ static struct {
   std::vector<float> pixels; /* RGBA float, GL bottom-up rows. */
   int w = 0, h = 0;
   bool fresh = false;
+  bool pending = false; /* A film map is in flight (the render's file write must wait for it). */
+  bool failed = false;
 } g_film_result;
+
+bool wgpu_film_capture_pending()
+{
+  return g_film_result.pending;
+}
+
+bool wgpu_film_capture_failed_take()
+{
+  const bool f = g_film_result.failed;
+  g_film_result.failed = false;
+  return f;
+}
 
 bool wgpu_film_result_take(std::vector<float> &r_pixels, int &r_w, int &r_h)
 {
@@ -817,6 +831,7 @@ void WebGPUContext::film_capture_async(WGPUTexture tex, WGPUTextureFormat fmt, i
   cb.userdata1 = mc;
   cb.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void *ud1, void *) {
     FilmMapCtx *mc = static_cast<FilmMapCtx *>(ud1);
+    bool got_pixels = false;
     if (status == WGPUMapAsyncStatus_Success) {
       const uint8_t *raw = static_cast<const uint8_t *>(
           wgpuBufferGetConstMappedRange(mc->buf, 0, uint64_t(mc->bpr) * uint64_t(mc->h)));
@@ -836,14 +851,18 @@ void WebGPUContext::film_capture_async(WGPUTexture tex, WGPUTextureFormat fmt, i
         g_film_result.w = int(mc->w);
         g_film_result.h = int(mc->h);
         g_film_result.fresh = true;
+        got_pixels = true;
         fprintf(stderr, "WGPU_FILM result ready %ux%u\n", mc->w, mc->h);
         fflush(stderr);
       }
       wgpuBufferUnmap(mc->buf);
     }
+    g_film_result.failed = !got_pixels;
+    g_film_result.pending = false;
     wgpuBufferRelease(mc->buf);
     delete mc;
   };
+  g_film_result.pending = true;
   wgpuBufferMapAsync(map_buf, WGPUMapMode_Read, 0, size, cb);
 }
 

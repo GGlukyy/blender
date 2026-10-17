@@ -618,13 +618,19 @@ void wm_close_and_free(bContext *C, wmWindowManager *wm)
  * injected into the "Combined" pass of the scene's RenderResult. */
 namespace gpu {
 bool wgpu_film_result_take(std::vector<float> &r_pixels, int &r_w, int &r_h);
+bool wgpu_film_capture_pending();
+bool wgpu_film_capture_failed_take();
 }
+void RE_web_flush_pending_write(Main *bmain_now, bool pixels_ok);
 
 static void wm_step_apply_film_result(bContext *C)
 {
   std::vector<float> pixels;
   int w = 0, h = 0;
   if (!gpu::wgpu_film_result_take(pixels, w, h)) {
+    if (!gpu::wgpu_film_capture_pending() && gpu::wgpu_film_capture_failed_take()) {
+      RE_web_flush_pending_write(CTX_data_main(C), false);
+    }
     return;
   }
   /* DEBUG: make the injected data unmistakable. */
@@ -715,6 +721,7 @@ static void wm_step_apply_film_result(bContext *C)
     fprintf(stderr, "WGPU_FILM injected into RenderResult %dx%d\n", w, h);
   }
   fflush(stderr);
+  RE_web_flush_pending_write(CTX_data_main(C), injected);
 }
 
 /* Phase 2 of the web File ▸ Open flow: the page calls blender_web_file_open_at()

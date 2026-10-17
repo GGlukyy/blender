@@ -174,6 +174,20 @@ static void render_callback_exec_id(Render *re, Main *bmain, ID *id, eCbEvent ev
 /** \name Allocation & Free
  * \{ */
 
+#ifdef __EMSCRIPTEN__
+namespace gpu {
+bool wgpu_film_capture_pending();
+}
+/* Image write postponed until the asynchronous GPU film readback has delivered real pixels. */
+static struct {
+  Render *re;
+  Main *bmain;
+  Scene *scene;
+  bool active;
+  char filepath[FILE_MAX];
+} g_web_pending_write = {};
+#endif
+
 static bool do_write_image_or_movie(Render *re,
                                     Main *bmain,
                                     Scene *scene,
@@ -1984,7 +1998,20 @@ void RE_RenderFrame(Render *re,
             nullptr);
 
         if (errors.is_empty()) {
-          do_write_image_or_movie(re, bmain, scene, 0, filepath_override, write_still);
+#ifdef __EMSCRIPTEN__
+          if (gpu::wgpu_film_capture_pending()) {
+            /* The film pixels are still being read back from the GPU (no synchronous readback
+             * on the web); the write happens in RE_web_flush_pending_write() once they arrive. */
+            g_web_pending_write = {re, bmain, scene, true, {}};
+            STRNCPY(g_web_pending_write.filepath, filepath_override);
+            fprintf(stderr, "WGPU_FILM write deferred %s\n", filepath_override);
+            fflush(stderr);
+          }
+          else
+#endif
+          {
+            do_write_image_or_movie(re, bmain, scene, 0, filepath_override, write_still);
+          }
         }
         else {
           BKE_report_path_template_errors(re->reports, RPT_ERROR, rd.pic, errors);
@@ -2280,6 +2307,31 @@ static bool do_write_image_or_movie(Render *re,
 
   return ok;
 }
+
+#ifdef __EMSCRIPTEN__
+void RE_web_flush_pending_write(Main *bmain_now, const bool pixels_ok)
+{
+  if (!g_web_pending_write.active) {
+    return;
+  }
+  g_web_pending_write.active = false;
+  Render *re = g_web_pending_write.re;
+  Scene *scene = g_web_pending_write.scene;
+  if (g_web_pending_write.bmain != bmain_now || BLI_findindex(&bmain_now->scenes, scene) < 0) {
+    return;
+  }
+  if (!pixels_ok) {
+    fprintf(stderr, "WGPU_FILM write dropped: GPU readback failed (%s)\n", g_web_pending_write.filepath);
+    fflush(stderr);
+    return;
+  }
+  const bool ok = do_write_image_or_movie(
+      re, bmain_now, scene, 0, g_web_pending_write.filepath, true);
+  fprintf(stderr, "WGPU_FILM deferred write %s ok=%d\n", g_web_pending_write.filepath, int(ok));
+  fflush(stderr);
+}
+#endif
+
 
 static void get_videos_dimensions(const Render *re,
                                   const RenderData *rd,
