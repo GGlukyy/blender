@@ -4,6 +4,8 @@
 
 #include "BLI_filereader.hh"
 
+#include <unordered_map>
+
 #include "BLO_core_bhead.hh"
 
 namespace blender {
@@ -19,13 +21,41 @@ static BHead bhead_from_bhead4(const BHead4 &bhead4)
   return bhead;
 }
 
+/* Truncation collision tracking (32-bit builds reading 64-bit files), see
+ * #BLO_bhead_truncation_check_begin. Only the thread opening the file touches this. */
+static thread_local std::unordered_map<uint32_t, uint64_t> *g_trunc_seen = nullptr;
+static thread_local int64_t g_trunc_collisions = 0;
+
+void BLO_bhead_truncation_check_begin()
+{
+  delete g_trunc_seen;
+  g_trunc_seen = new std::unordered_map<uint32_t, uint64_t>();
+  g_trunc_collisions = 0;
+}
+
+int64_t BLO_bhead_truncation_check_end()
+{
+  delete g_trunc_seen;
+  g_trunc_seen = nullptr;
+  return g_trunc_collisions;
+}
+
 static const void *old_ptr_from_uint64_ptr(const uint64_t ptr)
 {
   if constexpr (sizeof(void *) == 8) {
     return reinterpret_cast<const void *>(ptr);
   }
   else {
-    return reinterpret_cast<const void *>(uintptr_t(uint32_from_uint64_ptr(ptr)));
+    const uint32_t key = uint32_from_uint64_ptr(ptr);
+    if (g_trunc_seen && ptr != 0) {
+      /* Same raw address twice is legitimate; DIFFERENT raw addresses with the same key are the
+       * corrupting collision. */
+      const auto [it, inserted] = g_trunc_seen->emplace(key, ptr);
+      if (!inserted && it->second != ptr) {
+        g_trunc_collisions++;
+      }
+    }
+    return reinterpret_cast<const void *>(uintptr_t(key));
   }
 }
 

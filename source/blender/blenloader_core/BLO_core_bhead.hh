@@ -113,6 +113,14 @@ enum {
  *
  * \return The next #BHEad or #std::nullopt if the file is exhausted.
  */
+/**
+ * 32-bit builds reading 64-bit files: between #begin and #end, every converted #BHead.old (see
+ * #uint32_from_uint64_ptr) is checked for two DIFFERENT 64-bit addresses mapping to the same
+ * 32-bit key. #end returns the number of such collisions (0 = safe) and stops tracking.
+ */
+void BLO_bhead_truncation_check_begin();
+int64_t BLO_bhead_truncation_check_end();
+
 std::optional<BHead> BLO_readfile_read_bhead(FileReader *file, BHeadType type);
 
 /**

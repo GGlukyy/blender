@@ -1227,8 +1227,43 @@ static bool is_minversion_older_than_blender(FileData *fd, ReportList *reports)
   return false;
 }
 
+/**
+ * 32-bit (wasm32) build reading a 64-bit file: block addresses (`BHead::old`) are shrunk to
+ * `(address >> 3)` truncated to 32 bits (#uint32_from_uint64_ptr). Two different 64-bit addresses
+ * can then collide, and pointers in the file silently resolve to the WRONG block (corrupt data).
+ * There is no way to repair that here, so detect duplicates among the converted addresses and
+ * refuse to load rather than load damaged data. Returns false when the file must be refused.
+ */
+static bool blo_check_pointer_truncation(FileData *fd, ReportList *reports)
+{
+  if constexpr (sizeof(void *) != 4) {
+    return true;
+  }
+  /* Convert (and thereby check) every block address of the file. */
+  for (BHead *bhead = blo_bhead_first(fd); bhead; bhead = blo_bhead_next(fd, bhead)) {
+    if (bhead->code == BLO_CODE_ENDB) {
+      break;
+    }
+  }
+  const int64_t collisions = BLO_bhead_truncation_check_end();
+  if (collisions == 0 || fd->filesdna == nullptr || fd->filesdna->pointer_size != 8) {
+    return true;
+  }
+  BKE_reportf(reports,
+              RPT_ERROR,
+              "Cannot safely open blend file '%s' in this 32-bit (web) build: %lld block "
+              "addresses collide after conversion from 64-bit (collision), loading it would "
+              "corrupt data. Open it in desktop Blender and re-save it, or use a smaller file.",
+              fd->relabase,
+              static_cast<long long>(collisions));
+  return false;
+}
+
 static FileData *blo_decode_and_check(FileData *fd, ReportList *reports)
 {
+  if constexpr (sizeof(void *) == 4) {
+    BLO_bhead_truncation_check_begin();
+  }
   read_blender_header(fd);
 
   if (fd->flags & FD_FLAGS_SWITCH_ENDIAN) {
@@ -1247,6 +1282,10 @@ static FileData *blo_decode_and_check(FileData *fd, ReportList *reports)
     if (read_file_dna(fd, &error_message) == false) {
       BKE_reportf(
           reports, RPT_ERROR, "Failed to read blend file '%s': %s", fd->relabase, error_message);
+      blo_filedata_free(fd);
+      fd = nullptr;
+    }
+    else if (!blo_check_pointer_truncation(fd, reports)) {
       blo_filedata_free(fd);
       fd = nullptr;
     }
