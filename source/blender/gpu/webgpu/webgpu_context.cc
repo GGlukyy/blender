@@ -56,6 +56,25 @@ EM_JS(void, wgpu_perf_post, (int frame, double dt_avg_ms, double dt_max_ms, int 
   globalThis.__perf_bc.postMessage({frame, dt_avg_ms, dt_max_ms, submits, passes, bindgroups, tex, tex_mb, api_ms, imm_bufs, imm_kb,
                                     heap_mb: HEAPU8.length / 1048576});
 });
+/* "Compiling shaders…" overlay (demo/src/main.js): the render pthread blocks for seconds while the
+ * browser compiles big pipelines; the main thread stays free and shows a message. */
+EM_JS(void, wgpu_compile_post_js, (), {
+  if (!globalThis.__compile_bc) {
+    globalThis.__compile_bc = new BroadcastChannel("blender-compile");
+  }
+  globalThis.__compile_bc.postMessage(1);
+});
+void wgpu_note_compile()
+{
+  static double last = 0.0;
+  const double now = emscripten_get_now();
+  if (now - last > 150.0) {
+    last = now;
+    wgpu_compile_post_js();
+  }
+}
+#else
+void wgpu_note_compile() {}
 #endif
 
 namespace blender::gpu {

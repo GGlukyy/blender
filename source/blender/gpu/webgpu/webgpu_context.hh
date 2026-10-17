@@ -27,6 +27,9 @@
 
 #include <emscripten/emscripten.h>
 
+/* Tells the page that a (possibly long) shader/pipeline compile starts (rate limited). */
+void wgpu_note_compile();
+
 /* Perf counters for buffer uploads (all queue writes go through wgpu_counted_write). */
 inline long long g_stat_writes = 0, g_stat_write_bytes = 0, g_stat_write_big = 0;
 inline void wgpu_counted_write(WGPUQueue q, WGPUBuffer b, uint64_t off, const void *d, size_t n)

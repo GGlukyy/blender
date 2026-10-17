@@ -55,6 +55,7 @@ static WGPUShaderModule webgpu_module_from_wgsl(const std::string &wgsl)
   src.code = {wgsl.c_str(), wgsl.size()};
   WGPUShaderModuleDescriptor desc = {};
   desc.nextInChain = &src.chain;
+  wgpu_note_compile();
   return wgpuDeviceCreateShaderModule(device, &desc);
 }
 
