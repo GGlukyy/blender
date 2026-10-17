@@ -64,6 +64,7 @@
 #include "WM_toolsystem.hh"
 #include "WM_types.hh"
 #include "wm.hh"
+#include "wm_gizmo_wmapi.hh"
 #include "wm_draw.hh"
 #include "wm_event_system.hh"
 #include "wm_surface.hh"
@@ -1668,6 +1669,15 @@ extern "C" EMSCRIPTEN_KEEPALIVE const int *blender_web_viewport_rects()
   return g_web_viewport_rects;
 }
 
+/* 1 while the cursor (last mouse move) is over a gizmo of a 3D viewport (navigation gizmo/hand/zoom
+ * icons, move/rotate/scale handles). demo/src/touch.js uses it to drag the gizmo with a finger
+ * instead of orbiting. */
+static int g_web_gizmo_hot = 0;
+extern "C" EMSCRIPTEN_KEEPALIVE int blender_web_gizmo_hot()
+{
+  return g_web_gizmo_hot;
+}
+
 static void wm_web_publish_viewports(wmWindow *win)
 {
   bScreen *screen = WM_window_get_active_screen(win);
@@ -1677,6 +1687,7 @@ static void wm_web_publish_viewports(wmWindow *win)
   const int height = WM_window_native_pixel_y(win);
   int n = 0;
   int rects[4 * 8];
+  int gizmo_hot = 0;
   ED_screen_areas_iter (win, screen, area) {
     if (area->spacetype != SPACE_VIEW3D) {
       continue;
@@ -1684,6 +1695,9 @@ static void wm_web_publish_viewports(wmWindow *win)
     for (ARegion &region : area->regionbase) {
       if (region.regiontype != RGN_TYPE_WINDOW || !region.runtime->visible || n >= 8) {
         continue;
+      }
+      if (region.runtime->gizmo_map && wm_gizmomap_highlight_get(region.runtime->gizmo_map)) {
+        gizmo_hot = 1;
       }
       rects[4 * n + 0] = region.winrct.xmin;
       rects[4 * n + 1] = height - region.winrct.ymax;
@@ -1696,6 +1710,7 @@ static void wm_web_publish_viewports(wmWindow *win)
     g_web_viewport_rects[1 + i] = rects[i];
   }
   g_web_viewport_rects[0] = n;
+  g_web_gizmo_hot = gizmo_hot;
 }
 #endif
 
