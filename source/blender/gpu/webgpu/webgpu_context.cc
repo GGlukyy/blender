@@ -332,6 +332,10 @@ void WebGPUContext::render_pass_ensure(WebGPUFrameBuffer &fb)
   render_pass_fb_ = render_pass_ ? &fb : nullptr;
   extern int g_stat_passes;
   g_stat_passes++;
+  static const bool log_passes = getenv("WGPU_PASSLOG") != nullptr;
+  if (log_passes) {
+    fprintf(stderr, "PASSLOG %s\n", fb.name_get());
+  }
 }
 
 void WebGPUContext::render_pass_end()
