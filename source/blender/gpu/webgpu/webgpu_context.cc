@@ -45,6 +45,19 @@
  * the render, so JS can map+read it AFTER Blender quits (the wasm runtime stays
  * alive; synchronous readback is impossible mid-render with no JSPI). The C
  * exports below are driven by the harness after "Blender quit". */
+#ifdef __EMSCRIPTEN__
+#  include <emscripten/em_js.h>
+/* ?perf=1 overlay (demo/src/main.js): the render pthread cannot touch the page DOM, so it posts a
+ * sample to a BroadcastChannel every ~30 frames. */
+EM_JS(void, wgpu_perf_post, (int frame, double dt_avg_ms, double dt_max_ms, int submits, int passes, int bindgroups, int tex, int tex_mb), {
+  if (!globalThis.__perf_bc) {
+    globalThis.__perf_bc = new BroadcastChannel("blender-perf");
+  }
+  globalThis.__perf_bc.postMessage({frame, dt_avg_ms, dt_max_ms, submits, passes, bindgroups, tex, tex_mb,
+                                    heap_mb: HEAPU8.length / 1048576});
+});
+#endif
+
 namespace blender::gpu {
 /* DEBUG BISECT: when true, capture the last world draw's color attachment
  * (render_pass_end path) instead of the film output (read_color_sync path), to
@@ -1369,6 +1382,23 @@ void WebGPUContext::present_backbuffer(int w, int h)
     const double frame_ms = s_last_ms > 0.0 ? now_ms - s_last_ms : 0.0;
     s_last_ms = now_ms;
     s_frame++;
+#ifdef __EMSCRIPTEN__
+    {
+      static double s_acc_ms = 0.0, s_max_ms = 0.0;
+      static int s_acc_n = 0;
+      s_acc_ms += frame_ms;
+      s_max_ms = std::max(s_max_ms, frame_ms);
+      s_acc_n++;
+      if (s_acc_n >= 30) {
+        extern int g_stat_tex_count;
+        extern long long g_stat_tex_bytes;
+        wgpu_perf_post(s_frame, s_acc_ms / s_acc_n, s_max_ms, g_stat_submits, g_stat_passes,
+                       g_stat_bindgroups, g_stat_tex_count, int(g_stat_tex_bytes / (1024 * 1024)));
+        s_acc_ms = s_max_ms = 0.0;
+        s_acc_n = 0;
+      }
+    }
+#endif
     if (s_frame <= 8 || (s_frame % 60) == 0 || frame_ms > 25.0) {
       fprintf(stderr,
               "WGPU_STATS frame=%d dt=%.1fms submits=%d passes=%d bindgroups=%d bg_hits=%d "
