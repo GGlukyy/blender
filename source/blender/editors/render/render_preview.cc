@@ -2262,6 +2262,12 @@ void ED_preview_icon_job(
       /* Already in the queue, don't add it again. */
       return;
     }
+#ifdef __EMSCRIPTEN__
+    /* WM jobs run synchronously on web, and the job would start (and end) before the request
+     * below is queued, so requests were never served. Load this one directly instead. */
+    PreviewLoadJob::load_jobless(prv_img, icon_size);
+    return;
+#endif
     PreviewLoadJob &load_job = PreviewLoadJob::ensure_job(CTX_wm_manager(C), CTX_wm_window(C));
     load_job.push_load_request(prv_img, icon_size);
 
