@@ -1270,6 +1270,20 @@ static void do_render_compositor(Render *re)
     BLI_rw_mutex_unlock(&re->resultmutex);
   }
 
+#ifdef __EMSCRIPTEN__
+  /* Web: the render film reaches the CPU only asynchronously, so the compositor would run on an
+   * empty input (GPU device: the result is all zeros and replaces the real image). Skip it and
+   * keep the plain render. */
+  if (ntree && (re->r.scemode & R_DOCOMP)) {
+    if (re->reports) {
+      BKE_report(re->reports,
+                 RPT_WARNING,
+                 "Compositing is not supported in the web build, rendered without it");
+    }
+    ntree = nullptr;
+  }
+#endif
+
   if (!re->display->test_break()) {
     if (ntree && re->r.scemode & R_DOCOMP) {
       /* checks if there are render-result nodes that need scene */
