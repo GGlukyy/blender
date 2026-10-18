@@ -493,6 +493,12 @@ static std::string webgpu_glsl_patch(const char *stage_define)
         " return texelFetch(s, ivec3(co.x, 0, co.y), lod); }\n";
   ss << "ivec2 wgpu_size1darr(sampler2DArray s, int lod) {"
         " return textureSize(s, lod).xz; }\n";
+  /* texture() on integer samplers has no WGSL equivalent (integer textures are not filterable):
+   * promote_int_sampler_texture() rewrites such calls to these nearest-texel fetches. */
+  ss << "uvec4 wgpu_texint(usampler2D s, vec2 uv) { ivec2 sz = textureSize(s, 0);"
+        " return texelFetch(s, clamp(ivec2(floor(uv * vec2(sz))), ivec2(0), sz - 1), 0); }\n";
+  ss << "ivec4 wgpu_texint(isampler2D s, vec2 uv) { ivec2 sz = textureSize(s, 0);"
+        " return texelFetch(s, clamp(ivec2(floor(uv * vec2(sz))), ivec2(0), sz - 1), 0); }\n";
 
   GeneratedSourceList sources;
   GeneratedSource ext;
@@ -673,7 +679,16 @@ static bool glsl_to_wgsl(const std::string &glsl,
   auto ir = tint::spirv::reader::ReadIR(words, ropts);
   if (ir != tint::Success) {
     tint::internal_compiler_error_recovery = nullptr;
-    fprintf(stderr, "WGPU_SH tint-read FAIL %s: %s\n", name, ir.Failure().reason.c_str());
+    {
+      /* One line, first 600 chars (Tint's reason contains newlines that the browser console splits). */
+      std::string why = ir.Failure().reason;
+      for (char &c : why) {
+        if (c == '\n' || (unsigned char)c < 32 || (unsigned char)c > 126) {
+          c = '|';
+        }
+      }
+      fprintf(stderr, "WGPU_SH tint-read FAIL %s: %.600s\n", name, why.c_str());
+    }
     fflush(stderr);
     return false;
   }
@@ -1530,6 +1545,105 @@ static void promote_1d_samplers(std::string &src)
 }
 
 
+
+/* `texture(intSampler2D, uv)` -> `wgpu_texint(intSampler2D, uv)` (see the prelude helpers). */
+static void promote_int_sampler_texture(std::string &src)
+{
+  if (src.find("usampler2D") == std::string::npos && src.find("isampler2D") == std::string::npos) {
+    return;
+  }
+  auto is_ident = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+  };
+  std::set<std::string> names;
+  for (const char *t : {"usampler2D", "isampler2D"}) {
+    const size_t n = strlen(t);
+    for (size_t pos = src.find(t); pos != std::string::npos; pos = src.find(t, pos + 1)) {
+      if ((pos > 0 && is_ident(src[pos - 1])) || (pos + n < src.size() && is_ident(src[pos + n]))) {
+        continue;
+      }
+      size_t p = pos + n;
+      while (p < src.size() && (src[p] == ' ' || src[p] == '\t' || src[p] == '\n')) {
+        p++;
+      }
+      size_t e = p;
+      while (e < src.size() && is_ident(src[e])) {
+        e++;
+      }
+      /* Skip the helper definitions in the prelude (parameter named `s`). */
+      if (e > p && src.compare(p, e - p, "s") != 0) {
+        names.insert(src.substr(p, e - p));
+      }
+    }
+  }
+  if (names.empty()) {
+    return;
+  }
+  const std::string fn = "texture";
+  std::string out;
+  out.reserve(src.size() + 256);
+  size_t last = 0;
+  for (size_t pos = src.find(fn); pos != std::string::npos; pos = src.find(fn, pos + 1)) {
+    if ((pos > 0 && is_ident(src[pos - 1])) || is_ident(src[pos + fn.size()])) {
+      continue;
+    }
+    size_t p = pos + fn.size();
+    while (p < src.size() && (src[p] == ' ' || src[p] == '\t')) {
+      p++;
+    }
+    if (p >= src.size() || src[p] != '(') {
+      continue;
+    }
+    p++;
+    while (p < src.size() && (src[p] == ' ' || src[p] == '\t')) {
+      p++;
+    }
+    size_t e = p;
+    while (e < src.size() && is_ident(src[e])) {
+      e++;
+    }
+    if (e == p) {
+      continue;
+    }
+    std::string arg = src.substr(p, e - p);
+    size_t c = e;
+    if ((arg == "srt_access" || arg == "sampler_get") && e < src.size() && src[e] == '(') {
+      /* `srt_access(table, NAME)` / `sampler_get(info, NAME)` resolve to the resource NAME. */
+      const size_t comma = src.find(',', e);
+      const size_t close = src.find(')', e);
+      if (comma == std::string::npos || close == std::string::npos || comma > close) {
+        continue;
+      }
+      size_t a = comma + 1;
+      while (a < close && (src[a] == ' ' || src[a] == '\t')) {
+        a++;
+      }
+      size_t b = a;
+      while (b < close && is_ident(src[b])) {
+        b++;
+      }
+      arg = src.substr(a, b - a);
+      c = close + 1;
+    }
+    if (names.count(arg) == 0) {
+      continue;
+    }
+    while (c < src.size() && (src[c] == ' ' || src[c] == '\t')) {
+      c++;
+    }
+    if (c >= src.size() || src[c] != ',') {
+      continue;
+    }
+    out.append(src, last, pos - last);
+    out += "wgpu_texint";
+    last = pos + fn.size();
+  }
+  if (last != 0) {
+    out.append(src, last, std::string::npos);
+    src = std::move(out);
+  }
+}
+
 /* Texel buffers (samplerBuffer / isamplerBuffer / usamplerBuffer) have no WGSL
  * equivalent in Tint. Each global one becomes a read-only storage buffer
  * (`wgpu_tb_K[]`) and every use of the sampler becomes an `int` handle K that small
@@ -1781,6 +1895,7 @@ void WebGPUShader::ensure_translated()
     }
     if (!vertex_src_.empty()) {
       promote_1d_samplers(vertex_src_);
+      promote_int_sampler_texture(vertex_src_);
       promote_texel_buffers(vertex_src_);
       if (!wgsl_cache_get("v", vertex_src_, vertex_wgsl_)) {
         vert_ok = glsl_to_wgsl(
@@ -1792,6 +1907,7 @@ void WebGPUShader::ensure_translated()
     }
     if (!fragment_src_.empty()) {
       promote_1d_samplers(fragment_src_);
+      promote_int_sampler_texture(fragment_src_);
       promote_texel_buffers(fragment_src_);
       if (!wgsl_cache_get("f", fragment_src_, fragment_wgsl_)) {
         frag_ok = glsl_to_wgsl(
@@ -1804,6 +1920,7 @@ void WebGPUShader::ensure_translated()
   }
   else {
     promote_1d_samplers(compute_src_);
+      promote_int_sampler_texture(compute_src_);
       promote_texel_buffers(compute_src_);
     if (!wgsl_cache_get("c", compute_src_, compute_wgsl_)) {
       comp_ok = glsl_to_wgsl(
