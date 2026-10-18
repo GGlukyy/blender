@@ -141,6 +141,26 @@ void WebGPUVertexBuffer::bind_as_ssbo(uint binding)
   }
 }
 
+void WebGPUVertexBuffer::bind_as_texture(uint binding)
+{
+  /* Texel buffer: the shader reads this buffer through a read-only storage binding
+   * (see promote_texel_buffers in webgpu_shader.cc). */
+  WebGPUContext *ctx = WebGPUContext::get();
+  static const bool dbg = getenv("WGPU_LOG_TEXBUF") != nullptr;
+  if (dbg && data_) {
+    const float *f = reinterpret_cast<const float *>(data_);
+    fprintf(stderr,
+            "WGPU_TEXBUF bind slot=%u used=%zu bytes first=[%g %g %g %g | %g %g %g %g | %g %g %g %g]\n",
+            binding,
+            this->size_used_get(),
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11]);
+    fflush(stderr);
+  }
+  if (ctx) {
+    ctx->bind_texel_buffer(int(binding), wgpu_buffer(), int(GPU_vertbuf_get_format(this)->attrs[0].type.size()));
+  }
+}
+
 void WebGPUVertexBuffer::read(void *data) const
 {
   /* GPU->host readback needs an async map (no JSPI). Return the CPU shadow. */

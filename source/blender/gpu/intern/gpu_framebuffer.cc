@@ -567,7 +567,14 @@ void GPU_frontbuffer_read_color(
     int x, int y, int w, int h, int channels, eGPUDataFormat format, void *data)
 {
   int rect[4] = {x, y, w, h};
-  Context::get()->front_left->read(GPU_COLOR_BIT, format, rect, channels, 0, data);
+  Context *ctx = Context::get();
+  /* The WebGPU backend has no separate front buffer (presenting is implicit): fall back to the
+   * back buffer instead of dereferencing a null `front_left` (paint eyedropper crashed). */
+  FrameBuffer *fb = ctx->front_left ? ctx->front_left : ctx->back_left;
+  if (fb == nullptr) {
+    return;
+  }
+  fb->read(GPU_COLOR_BIT, format, rect, channels, 0, data);
 }
 
 /* TODO(fclem): port as texture operation. */

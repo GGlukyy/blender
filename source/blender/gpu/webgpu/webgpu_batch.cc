@@ -1164,7 +1164,11 @@ void WebGPUBatch::record_draw(int vertex_first,
     }
   }
   static int s_draw_log = 0;
-  if (s_draw_log < 16) {
+  /* DEBUG: ENV.WGPU_LOG_DRAW_SHADER=<substr> logs every draw of matching shaders. */
+  static const char *s_draw_shader_pat = getenv("WGPU_LOG_DRAW_SHADER");
+  const bool draw_shader_match = s_draw_shader_pat &&
+                                 strstr(shader->name_get().c_str(), s_draw_shader_pat);
+  if (s_draw_log < 16 || draw_shader_match) {
     fprintf(stderr,
             "WGPU_BATCH draw #%d shader='%s' verts=%d inst=%d indexed=%d bg=%p\n",
             s_draw_log++,
@@ -1256,6 +1260,15 @@ void WebGPUBatch::record_draw(int vertex_first,
       WebGPUIndexBuf *ibo = static_cast<WebGPUIndexBuf *>(elem_());
       const uint32_t index_count = (vertex_count > 0) ? uint32_t(vertex_count) :
                                                         ibo->index_len_get();
+      if (draw_shader_match && ibo->cpu_data()) {
+        const uint32_t *u = static_cast<const uint32_t *>(ibo->cpu_data());
+        fprintf(stderr,
+                "WGPU_IBDRAW '%s' count=%u first=%d base=%d len=%u fmt=%s i0..5=[%u %u %u %u %u %u]\n",
+                shader->name_get().c_str(), index_count, vertex_first, int(ibo->index_base_get()),
+                ibo->index_len_get(), ibo->wgpu_index_format() == WGPUIndexFormat_Uint32 ? "u32" : "u16",
+                u[0], u[1], u[2], u[3], u[4], u[5]);
+        fflush(stderr);
+      }
       /* vertex_first = firstIndex for indexed draws (GPU_batch_draw_range
        * semantics); index_base_ = baseVertex for min-index-compressed IBOs.
        * Hardcoded zeros here shifted every sub-range indexed draw's attribute

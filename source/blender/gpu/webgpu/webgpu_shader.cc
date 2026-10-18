@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <map>
 #include <set>
 
 #ifdef __EMSCRIPTEN__
@@ -897,6 +898,14 @@ static void parse_wgsl_bindings(const std::string &wgsl, std::vector<WgslResourc
     else if (decl.compare(0, 11, "var<storage") == 0) {
       b.kind = WgslResourceBinding::SSBO;
       b.res_name = strip_buffer_typename(type);
+      for (const char *pre : {"wgpu_tbf_", "wgpu_tbi_", "wgpu_tbu_"}) {
+        if (b.res_name.compare(0, 9, pre) == 0) {
+          b.texel_buffer = true;
+          b.texel_bytes = (pre[7] == 'f') ? 16 : 4;
+          b.res_name.erase(0, 9);
+          break;
+        }
+      }
       /* `var<storage, read>` = read-only; `read_write` (or bare) = writable. */
       const std::string head = decl.substr(0, decl.find('>'));
       if (has(head, "read_write")) {
@@ -1520,6 +1529,206 @@ static void promote_1d_samplers(std::string &src)
   replace_all_str(src, "sampler1D", "sampler2D");
 }
 
+
+/* Texel buffers (samplerBuffer / isamplerBuffer / usamplerBuffer) have no WGSL
+ * equivalent in Tint. Each global one becomes a read-only storage buffer
+ * (`wgpu_tb_K[]`) and every use of the sampler becomes an `int` handle K that small
+ * dispatcher functions resolve (GLSL cannot pass buffer blocks as arguments, and
+ * samplerBuffer is also used as a function parameter type). The backend binds the
+ * vertex buffer's WGPUBuffer to the storage binding (WebGPUVertexBuffer::bind_as_texture).
+ * Float buffers are read as raw uvec4 (16 B per texel), int/uint buffers as 4 B. */
+static void promote_texel_buffers(std::string &src)
+{
+  if (src.find("samplerBuffer") == std::string::npos) {
+    return;
+  }
+  auto is_ident = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+  };
+  struct Global {
+    std::string name;
+    char kind; /* f, i, u */
+    int binding;
+  };
+  std::vector<Global> globals;
+  std::map<std::string, char> kinds; /* every name typed as a texel buffer (globals + parameters) */
+
+  /* Pass 1: global declarations `layout(binding = B) uniform [iu]samplerBuffer NAME;`. */
+  std::string out;
+  out.reserve(src.size() + 4096);
+  size_t last = 0;
+  const std::string tok = "samplerBuffer";
+  for (size_t pos = src.find(tok); pos != std::string::npos; pos = src.find(tok, pos + 1)) {
+    size_t tstart = pos;
+    char kind = 'f';
+    if (pos > 0 && (src[pos - 1] == 'i' || src[pos - 1] == 'u') &&
+        (pos < 2 || !is_ident(src[pos - 2])))
+    {
+      kind = src[pos - 1];
+      tstart = pos - 1;
+    }
+    else if (pos > 0 && is_ident(src[pos - 1])) {
+      continue;
+    }
+    size_t p = pos + tok.size();
+    if (p >= src.size() || is_ident(src[p])) {
+      continue;
+    }
+    while (p < src.size() && (src[p] == ' ' || src[p] == '\t')) {
+      p++;
+    }
+    size_t e = p;
+    while (e < src.size() && is_ident(src[e])) {
+      e++;
+    }
+    if (e == p) {
+      continue;
+    }
+    const std::string name = src.substr(p, e - p);
+    kinds[name] = kind;
+    /* Is this `layout(binding = B) uniform <type> NAME;`? Look back for `uniform`. */
+    size_t b = tstart;
+    while (b > 0 && (src[b - 1] == ' ' || src[b - 1] == '\t')) {
+      b--;
+    }
+    if (b < 7 || src.compare(b - 7, 7, "uniform") != 0) {
+      continue;
+    }
+    size_t l = b - 7;
+    while (l > 0 && (src[l - 1] == ' ' || src[l - 1] == '\t')) {
+      l--;
+    }
+    if (l == 0 || src[l - 1] != ')') {
+      continue;
+    }
+    const size_t lay = src.rfind("layout(", l);
+    if (lay == std::string::npos || lay < last) {
+      continue;
+    }
+    const size_t eq = src.find('=', lay);
+    if (eq == std::string::npos || eq > l) {
+      continue;
+    }
+    int binding = atoi(src.c_str() + eq + 1);
+    size_t semi = e;
+    while (semi < src.size() && (src[semi] == ' ' || src[semi] == '\t')) {
+      semi++;
+    }
+    if (semi >= src.size() || src[semi] != ';') {
+      continue;
+    }
+    out.append(src, last, lay - last);
+    out += "const int " + name + " = " + std::to_string(globals.size()) + ";";
+    globals.push_back({name, kind, binding});
+    last = semi + 1;
+  }
+  out.append(src, last, std::string::npos);
+  src = std::move(out);
+
+  /* Pass 2: texelFetch / textureSize calls on texel-buffer names go through the dispatchers. */
+  static const struct {
+    const char *fn;
+    const char *repl;
+  } kFns[] = {{"texelFetch", "wgpu_tbfetch_"}, {"textureSize", "wgpu_tbsize"}};
+  for (const auto &f : kFns) {
+    const size_t fn_len = strlen(f.fn);
+    std::string o2;
+    o2.reserve(src.size() + 1024);
+    size_t lst = 0;
+    for (size_t pos = src.find(f.fn); pos != std::string::npos; pos = src.find(f.fn, pos + 1)) {
+      if ((pos > 0 && is_ident(src[pos - 1])) || is_ident(src[pos + fn_len])) {
+        continue;
+      }
+      size_t p = pos + fn_len;
+      while (p < src.size() && (src[p] == ' ' || src[p] == '\t')) {
+        p++;
+      }
+      if (p >= src.size() || src[p] != '(') {
+        continue;
+      }
+      p++;
+      while (p < src.size() && (src[p] == ' ' || src[p] == '\t')) {
+        p++;
+      }
+      size_t e = p;
+      while (e < src.size() && is_ident(src[e])) {
+        e++;
+      }
+      if (e == p) {
+        continue;
+      }
+      const auto it = kinds.find(src.substr(p, e - p));
+      if (it == kinds.end()) {
+        continue;
+      }
+      o2.append(src, lst, pos - lst);
+      o2 += f.repl;
+      if (f.repl[strlen(f.repl) - 1] == '_') {
+        o2 += it->second;
+      }
+      lst = pos + fn_len;
+    }
+    if (lst != 0) {
+      o2.append(src, lst, std::string::npos);
+      src = std::move(o2);
+    }
+  }
+
+  /* Pass 3: remaining sampler-buffer types (function parameters) become int handles. */
+  for (const char *t : {"isamplerBuffer", "usamplerBuffer", "samplerBuffer"}) {
+    const size_t n = strlen(t);
+    for (size_t pos = src.find(t); pos != std::string::npos; pos = src.find(t, pos + 1)) {
+      if ((pos > 0 && is_ident(src[pos - 1])) || (pos + n < src.size() && is_ident(src[pos + n]))) {
+        continue;
+      }
+      src.replace(pos, n, "int");
+    }
+  }
+
+  /* Pass 4: storage blocks + dispatchers, inserted at global scope after the prelude. */
+  std::string decl;
+  for (size_t k = 0; k < globals.size(); k++) {
+    const Global &g = globals[k];
+    const char *elem = g.kind == 'f' ? "uvec4" : (g.kind == 'i' ? "int" : "uint");
+    decl += "layout(binding = " + std::to_string(g.binding) + ", std430) readonly buffer _wgpu_tb" +
+            std::string(1, g.kind) + "_" + g.name + " { " + elem + " wgpu_tb_" + std::to_string(k) +
+            "[]; };\n";
+  }
+  auto dispatcher = [&](const char *ret, char kind, const char *conv_open, const char *conv_close,
+                        const char *zero) {
+    decl += std::string(ret) + " wgpu_tbfetch_" + std::string(1, kind) + "(int h, int i) {\n";
+    for (size_t k = 0; k < globals.size(); k++) {
+      if (globals[k].kind != kind) {
+        continue;
+      }
+      const std::string ks = std::to_string(k);
+      decl += "  if (h == " + ks + ") { return uint(i) < uint(wgpu_tb_" + ks + ".length()) ? " +
+              conv_open + "wgpu_tb_" + ks + "[i]" + conv_close + " : " + zero + "; }\n";
+    }
+    decl += std::string("  return ") + zero + ";\n}\n";
+  };
+  dispatcher("vec4", 'f', "uintBitsToFloat(", ")", "vec4(0.0)");
+  dispatcher("ivec4", 'i', "ivec4(", ", 0, 0, 1)", "ivec4(0)");
+  dispatcher("uvec4", 'u', "uvec4(", ", 0u, 0u, 1u)", "uvec4(0u)");
+  decl += "int wgpu_tbsize(int h) {\n";
+  for (size_t k = 0; k < globals.size(); k++) {
+    decl += "  if (h == " + std::to_string(k) + ") { return int(wgpu_tb_" + std::to_string(k) +
+            ".length()); }\n";
+  }
+  decl += "  return 0;\n}\n";
+
+  const std::string anchor = "ivec2 wgpu_size1darr(";
+  size_t ap = src.find(anchor);
+  if (ap != std::string::npos) {
+    ap = src.find("}\n", ap);
+  }
+  if (ap == std::string::npos) {
+    fprintf(stderr, "WGPU_TEXBUF prelude anchor missing, texel buffers not promoted\n");
+    return;
+  }
+  src.insert(ap + 2, decl);
+}
+
 /* Translate all present stages GLSL -> SPIR-V -> WGSL and parse the WGSL
  * metadata (bindings, outputs, vertex inputs). DEFERRED to first use: Blender
  * batch-precompiles whole shader modules (opening the Add menu compiled 174
@@ -1554,6 +1763,7 @@ void WebGPUShader::ensure_translated()
     }
     if (!vertex_src_.empty()) {
       promote_1d_samplers(vertex_src_);
+      promote_texel_buffers(vertex_src_);
       if (!wgsl_cache_get("v", vertex_src_, vertex_wgsl_)) {
         vert_ok = glsl_to_wgsl(
             vertex_src_, shaderc_vertex_shader, name_get().c_str(), vertex_wgsl_);
@@ -1564,6 +1774,7 @@ void WebGPUShader::ensure_translated()
     }
     if (!fragment_src_.empty()) {
       promote_1d_samplers(fragment_src_);
+      promote_texel_buffers(fragment_src_);
       if (!wgsl_cache_get("f", fragment_src_, fragment_wgsl_)) {
         frag_ok = glsl_to_wgsl(
             fragment_src_, shaderc_fragment_shader, name_get().c_str(), fragment_wgsl_);
@@ -1575,6 +1786,7 @@ void WebGPUShader::ensure_translated()
   }
   else {
     promote_1d_samplers(compute_src_);
+      promote_texel_buffers(compute_src_);
     if (!wgsl_cache_get("c", compute_src_, compute_wgsl_)) {
       comp_ok = glsl_to_wgsl(
           compute_src_, shaderc_compute_shader, name_get().c_str(), compute_wgsl_);

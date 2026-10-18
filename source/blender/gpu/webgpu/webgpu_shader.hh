@@ -45,6 +45,10 @@ struct WgslResourceBinding {
   WGPUTextureFormat storage_format = WGPUTextureFormat_RGBA8Unorm;
   WGPUSamplerBindingType sampler_type = WGPUSamplerBindingType_Filtering;
   bool writable = false; /* read_write storage buffer / storage texture */
+  /* SSBO that stands in for a samplerBuffer (texel buffer, see promote_texel_buffers);
+   * res_name is then the sampler's name and texel_bytes the expected element size. */
+  bool texel_buffer = false;
+  uint8_t texel_bytes = 0;
 };
 
 /* One @location the vertex entry point consumes (parsed from the WGSL). WebGPU

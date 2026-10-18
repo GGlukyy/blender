@@ -90,6 +90,9 @@ class WebGPUContext : public Context {
   WGPUBuffer bound_ubo_[WEBGPU_MAX_UBO] = {};
   WGPUBuffer bound_ssbo_[WEBGPU_MAX_SSBO] = {};
   WebGPUTexture *bound_tex_[WEBGPU_MAX_TEX] = {};
+  /* Texel buffers (samplerBuffer): vertex buffers bound as textures are read as storage buffers. */
+  WGPUBuffer bound_texbuf_[WEBGPU_MAX_TEX] = {};
+  uint8_t bound_texbuf_bytes_[WEBGPU_MAX_TEX] = {};
   /* Sampler state captured at bind time (filtering/extend per unit). */
   GPUSamplerState bound_tex_state_[WEBGPU_MAX_TEX] = {};
   /* Cache: GPUSamplerState key -> WGPUSampler (see sampler_for_state). */
@@ -264,6 +267,11 @@ class WebGPUContext : public Context {
     for (int i = 0; i < WEBGPU_MAX_SSBO; i++) {
       if (bound_ssbo_[i] == old_buf) {
         table_set(bound_ssbo_[i], new_buf);
+      }
+    }
+    for (int i = 0; i < WEBGPU_MAX_TEX; i++) {
+      if (bound_texbuf_[i] == old_buf) {
+        table_set(bound_texbuf_[i], new_buf);
       }
     }
   }
@@ -508,6 +516,13 @@ class WebGPUContext : public Context {
       table_set(bound_ssbo_[slot], buf);
     }
   }
+  void bind_texel_buffer(int slot, WGPUBuffer buf, int element_bytes)
+  {
+    if (slot >= 0 && slot < WEBGPU_MAX_TEX) {
+      table_set(bound_texbuf_[slot], buf);
+      bound_texbuf_bytes_[slot] = uint8_t(element_bytes);
+    }
+  }
   void unbind_ssbo(int slot)
   {
     if (slot >= 0 && slot < WEBGPU_MAX_SSBO) {
@@ -561,6 +576,11 @@ class WebGPUContext : public Context {
     for (int i = 0; i < WEBGPU_MAX_SSBO; i++) {
       if (bound_ssbo_[i] == buf) {
         table_set(bound_ssbo_[i], nullptr);
+      }
+    }
+    for (int i = 0; i < WEBGPU_MAX_TEX; i++) {
+      if (bound_texbuf_[i] == buf) {
+        table_set(bound_texbuf_[i], nullptr);
       }
     }
   }

@@ -1836,6 +1836,25 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
         break;
       }
       case WgslResourceBinding::SSBO: {
+        if (b.texel_buffer) {
+          const ShaderInput *tin = iface->uniform_get(StringRefNull(b.res_name.c_str()));
+          const int tslot = tin ? tin->binding : -1;
+          const bool ok = tslot >= 0 && tslot < WEBGPU_MAX_TEX && bound_texbuf_[tslot] != nullptr &&
+                          bound_texbuf_bytes_[tslot] == b.texel_bytes;
+          if (!ok && tslot >= 0 && tslot < WEBGPU_MAX_TEX && bound_texbuf_[tslot] != nullptr) {
+            static int s_warn = 0;
+            if (s_warn++ < 8) {
+              fprintf(stderr,
+                      "WGPU_TEXBUF element size mismatch '%s': buffer %d B, shader expects %d B\n",
+                      b.res_name.c_str(),
+                      int(bound_texbuf_bytes_[tslot]),
+                      int(b.texel_bytes));
+            }
+          }
+          e.buffer = ok ? bound_texbuf_[tslot] : nullptr;
+          e.size = WGPU_WHOLE_SIZE;
+          break;
+        }
         const ShaderInput *in = iface->ssbo_get(StringRefNull(b.res_name.c_str()));
         int slot = in ? in->binding : -1;
         e.buffer = (slot >= 0 && slot < WEBGPU_MAX_SSBO) ? bound_ssbo_[slot] : nullptr;
