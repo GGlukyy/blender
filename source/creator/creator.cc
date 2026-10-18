@@ -403,6 +403,10 @@ int main(int argc,
     const char *cap_ssbo_env = getenv("WGPU_CAP_MAX_SSBO");
     const double cap_buf = cap_buf_env ? atof(cap_buf_env) : 0.0;
     const double cap_ssbo = cap_ssbo_env ? atof(cap_ssbo_env) : 0.0;
+    /* WGPU_CAP_MAX_SSBO_STAGE (count): clamp maxStorageBuffersPerShaderStage (Safari may offer far
+     * fewer than a desktop GPU; texel buffers and EEVEE use many storage bindings). */
+    const char *cap_stage_env = getenv("WGPU_CAP_MAX_SSBO_STAGE");
+    const double cap_stage = cap_stage_env ? atof(cap_stage_env) : 0.0;
     EM_ASM({
       (async () => {
         try {
@@ -432,8 +436,13 @@ int main(int argc,
             requiredLimits.maxStorageBufferBindingSize =
                 Math.min(requiredLimits.maxStorageBufferBindingSize, $1);
           }
+          if ($2 > 0) {
+            requiredLimits.maxStorageBuffersPerShaderStage =
+                Math.min(requiredLimits.maxStorageBuffersPerShaderStage, $2);
+          }
           console.log("WGPU_LIMITS maxBufferSize=" + requiredLimits.maxBufferSize +
-                      " maxStorageBufferBindingSize=" + requiredLimits.maxStorageBufferBindingSize);
+                      " maxStorageBufferBindingSize=" + requiredLimits.maxStorageBufferBindingSize +
+                      " maxStorageBuffersPerShaderStage=" + requiredLimits.maxStorageBuffersPerShaderStage);
           Module["preinitializedWebGPUDevice"] =
               await adapter.requestDevice({ requiredFeatures, requiredLimits });
           /* Device loss (iPad memory pressure / app switch) freezes the canvas silently; the page
@@ -448,7 +457,7 @@ int main(int argc,
           if (e !== "unwind") console.error("pthread WebGPU device acquire failed:", e);
         }
       })();
-    }, cap_buf, cap_ssbo);
+    }, cap_buf, cap_ssbo, cap_stage);
     emscripten_exit_with_live_runtime();
     return 0;
   }

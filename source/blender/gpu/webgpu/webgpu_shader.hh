@@ -49,6 +49,9 @@ struct WgslResourceBinding {
    * res_name is then the sampler's name and texel_bytes the expected element size. */
   bool texel_buffer = false;
   uint8_t texel_bytes = 0;
+  /* Stages whose WGSL module declares this binding (1 = vertex, 2 = fragment). Bind group layout
+   * visibility follows it so maxStorageBuffersPerShaderStage counts only buffers a stage reads. */
+  uint8_t stage_mask = 0;
 };
 
 /* One @location the vertex entry point consumes (parsed from the WGSL). WebGPU

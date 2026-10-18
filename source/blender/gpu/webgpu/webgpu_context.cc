@@ -1705,8 +1705,18 @@ WGPUBindGroupLayout WebGPUContext::make_bind_group_layout(
   for (const WgslResourceBinding &b : bindings) {
     WGPUBindGroupLayoutEntry e = {};
     e.binding = b.binding;
+    /* Visibility follows the stages whose WGSL actually declares the binding (fewer storage
+     * buffers per stage on devices with a low maxStorageBuffersPerShaderStage). Only buffers are
+     * narrowed: textures/samplers keep both stages (Tint pairs them across modules). */
+    WGPUShaderStage vis = base_vis;
+    if (!is_compute && b.stage_mask != 0 &&
+        (b.kind == WgslResourceBinding::SSBO || b.kind == WgslResourceBinding::UBO))
+    {
+      vis = WGPUShaderStage((b.stage_mask & 1 ? WGPUShaderStage_Vertex : 0) |
+                            (b.stage_mask & 2 ? WGPUShaderStage_Fragment : 0));
+    }
     /* Writable storage is illegal in the vertex stage. */
-    e.visibility = (b.writable && !is_compute) ? WGPUShaderStage_Fragment : base_vis;
+    e.visibility = (b.writable && !is_compute) ? WGPUShaderStage_Fragment : vis;
     switch (b.kind) {
       case WgslResourceBinding::UBO:
       case WgslResourceBinding::PUSH_CONST:

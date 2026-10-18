@@ -865,7 +865,9 @@ static WGPUTextureFormat wgsl_storage_format(const std::string &type)
 /* Parse `@group(0u) @binding(Nu) var<...> name : type;` declarations from WGSL
  * and append them to `out`. WGSL is the source of truth for the pipeline's
  * expected bindings (Tint renumbers after splitting combined image-samplers). */
-static void parse_wgsl_bindings(const std::string &wgsl, std::vector<WgslResourceBinding> &out)
+static void parse_wgsl_bindings(const std::string &wgsl,
+                                std::vector<WgslResourceBinding> &out,
+                                const uint8_t stage_bit = 0)
 {
   size_t pos = 0;
   const std::string key = "@binding(";
@@ -972,13 +974,15 @@ static void parse_wgsl_bindings(const std::string &wgsl, std::vector<WgslResourc
     }
     /* Dedup by binding (a resource used in vert+frag appears in both). */
     bool dup = false;
-    for (const WgslResourceBinding &e : out) {
+    for (WgslResourceBinding &e : out) {
       if (e.binding == b.binding) {
+        e.stage_mask |= stage_bit;
         dup = true;
         break;
       }
     }
     if (!dup) {
+      b.stage_mask = stage_bit;
       out.push_back(b);
     }
   }
@@ -1952,8 +1956,8 @@ void WebGPUShader::ensure_translated()
   }
 
   if (translated) {
-    parse_wgsl_bindings(vertex_wgsl_, render_bindings_);
-    parse_wgsl_bindings(fragment_wgsl_, render_bindings_);
+    parse_wgsl_bindings(vertex_wgsl_, render_bindings_, 1);
+    parse_wgsl_bindings(fragment_wgsl_, render_bindings_, 2);
     parse_wgsl_bindings(compute_wgsl_, compute_bindings_);
     frag_output_mask_ = parse_fragment_output_mask(fragment_wgsl_);
     parse_vertex_inputs(vertex_wgsl_, vertex_inputs_);
