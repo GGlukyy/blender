@@ -709,6 +709,14 @@ static bool screen_opengl_render_init(bContext *C, wmOperator *op)
   wmWindow *win = CTX_wm_window(C);
   WorkSpace *workspace = CTX_wm_workspace(C);
 
+#ifdef __EMSCRIPTEN__
+  /* The web build cannot read the offscreen viewport synchronously, so the result would be an
+   * empty image saved without any hint. Say so instead (F12 render works). */
+  BKE_report(op->reports,
+             RPT_ERROR,
+             "Viewport Render is not supported in the web build yet, use Render Image (F12)");
+  return false;
+#endif
   const bool is_sequencer = RNA_boolean_get(op->ptr, "sequencer");
 
   Scene *scene = !is_sequencer ? CTX_data_scene(C) : CTX_data_sequencer_scene(C);
