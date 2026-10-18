@@ -132,6 +132,9 @@ class WebGPUBackend : public GPUBackend {
     GCaps.max_texture_size = 8192;
     GCaps.max_texture_3d_size = 2048;
     GCaps.max_texture_layers = 256;
+    /* Texel buffers are storage buffers here (16 B texels, 128 MiB default binding limit). Left at
+     * 0 it made Curves/hair clamp their batch to zero vertices (draw_cache_impl_curves.cc). */
+    GCaps.max_buffer_texture_size = 1 << 23;
     GCaps.max_textures = 32;        /* Blender slot space (bind tables are 32-wide) */
     GCaps.max_images = 16;          /* Blender slot space */
     GCaps.max_work_group_count[0] = 65535;

@@ -1657,7 +1657,25 @@ static void promote_texel_buffers(std::string &src)
       if (e == p) {
         continue;
       }
-      const auto it = kinds.find(src.substr(p, e - p));
+      std::string arg = src.substr(p, e - p);
+      if ((arg == "sampler_get" || arg == "buffer_get") && e < src.size() && src[e] == '(') {
+        /* `sampler_get/buffer_get(create_info, NAME)` expand to NAME in GLSL. */
+        const size_t comma = src.find(',', e);
+        const size_t close = src.find(')', e);
+        if (comma == std::string::npos || close == std::string::npos || comma > close) {
+          continue;
+        }
+        size_t a = comma + 1;
+        while (a < close && (src[a] == ' ' || src[a] == '\t')) {
+          a++;
+        }
+        size_t b = a;
+        while (b < close && is_ident(src[b])) {
+          b++;
+        }
+        arg = src.substr(a, b - a);
+      }
+      const auto it = kinds.find(arg);
       if (it == kinds.end()) {
         continue;
       }
