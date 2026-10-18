@@ -785,6 +785,10 @@ void WebGPUBatch::record_draw(int vertex_first,
   if (blend == GPU_BLEND_CUSTOM && getenv("WGPU_TRANSP_NODEPTH")) {
     depth_test = GPU_DEPTH_ALWAYS;
   }
+  /* DEBUG bisect: ENV.WGPU_GP_NODEPTH=1 disables the depth test of grease pencil strokes. */
+  if (getenv("WGPU_GP_NODEPTH") && strstr(shader->name_get().c_str(), "gpencil_geometry")) {
+    depth_test = GPU_DEPTH_ALWAYS;
+  }
   const GPUFaceCullTest cull = GPUFaceCullTest(gst.culling_test);
   const GPUStateMutable &mst = ctx->state_manager->mutable_state;
   const WGPUStencilParams stencil = to_wgpu_stencil(gst, mst, depth_fmt);
@@ -1168,6 +1172,14 @@ void WebGPUBatch::record_draw(int vertex_first,
   static const char *s_draw_shader_pat = getenv("WGPU_LOG_DRAW_SHADER");
   const bool draw_shader_match = s_draw_shader_pat &&
                                  strstr(shader->name_get().c_str(), s_draw_shader_pat);
+  if (draw_shader_match) {
+    fprintf(stderr,
+            "WGPU_DRAWSTATE '%s' fb='%s' depth_test=%d write=0x%x blend=%d cull=%d invert=%d out_mask=0x%x colors=%d\n",
+            shader->name_get().c_str(), fb->name_get(), int(gst.depth_test), uint(gst.write_mask),
+            int(gst.blend), int(gst.culling_test), int(gst.invert_facing), shader->fragment_output_mask(),
+            color_count);
+    fflush(stderr);
+  }
   if (s_draw_log < 16 || draw_shader_match) {
     fprintf(stderr,
             "WGPU_BATCH draw #%d shader='%s' verts=%d inst=%d indexed=%d bg=%p\n",

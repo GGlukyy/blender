@@ -158,6 +158,19 @@ static WGPUTextureUsage webgpu_texture_usage(eGPUTextureUsage usage,
   if (usage & GPU_TEXTURE_USAGE_ATTACHMENT) {
     flags |= WGPUTextureUsage_RenderAttachment;
   }
+  /* Depth textures cannot be filled with WriteTexture; constant-valued uploads (dummy 1.0 depth
+   * textures, e.g. grease pencil's) are done by a clearing render pass instead. */
+  switch (format) {
+    case WGPUTextureFormat_Depth16Unorm:
+    case WGPUTextureFormat_Depth24Plus:
+    case WGPUTextureFormat_Depth24PlusStencil8:
+    case WGPUTextureFormat_Depth32Float:
+    case WGPUTextureFormat_Depth32FloatStencil8:
+      flags |= WGPUTextureUsage_RenderAttachment;
+      break;
+    default:
+      break;
+  }
   return flags;
 }
 
@@ -547,7 +560,23 @@ void WebGPUTexture::update_sub(int mip,
     return;
   }
   if (is_depth_format()) {
-    /* WebGPU forbids writing the depth aspect via WriteTexture. */
+    /* WebGPU forbids writing the depth aspect via WriteTexture. A constant float upload covering
+     * the whole texture (dummy depth textures) becomes a clear. */
+    if (format == GPU_DATA_FLOAT && mip == 0 && offset[0] == 0 && offset[1] == 0 &&
+        offset[2] == 0 && extent[0] == w_ && extent[1] == h_ && extent[2] <= std::max(d_, 1) &&
+        unpack_row_length == 0)
+    {
+      const float *f = static_cast<const float *>(data);
+      const size_t n = size_t(extent[0]) * size_t(extent[1]) * size_t(std::max(extent[2], 1));
+      bool uniform = true;
+      for (size_t i = 1; i < n && uniform; i++) {
+        uniform = (f[i] == f[0]);
+      }
+      if (uniform) {
+        this->clear(double4(double(f[0]), 0.0, 0.0, 0.0));
+        return;
+      }
+    }
     static int s_depth_up = 0;
     if (s_depth_up++ < 4) {
       fprintf(stderr, "WGPU_TEX update_sub '%s': depth upload skipped\n", name_.c_str());

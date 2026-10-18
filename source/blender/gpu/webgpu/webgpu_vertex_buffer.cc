@@ -154,6 +154,12 @@ void WebGPUVertexBuffer::bind_as_texture(uint binding)
             binding,
             this->size_used_get(),
             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11]);
+    if (this->size_used_get() > 792 * 16 + 48) {
+      const float *g = f + 792 * 4;
+      fprintf(stderr, "WGPU_TEXBUF texel792=[%g %g %g %g | %d %d %d %d | %g %g %g %g]\n", g[0], g[1], g[2], g[3],
+              reinterpret_cast<const int *>(g)[4], reinterpret_cast<const int *>(g)[5],
+              reinterpret_cast<const int *>(g)[6], reinterpret_cast<const int *>(g)[7], g[8], g[9], g[10], g[11]);
+    }
     fflush(stderr);
   }
   if (ctx) {
