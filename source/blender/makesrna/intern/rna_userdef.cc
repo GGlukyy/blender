@@ -875,10 +875,10 @@ static void rna_userdef_ndof_deadzone_update(Main * /*bmain*/, Scene * /*scene*/
 }
 #  endif
 
-static void rna_userdef_keyconfig_reload_update(bContext *C,
-                                                Main * /*bmain*/,
-                                                Scene * /*scene*/,
-                                                PointerRNA * /*ptr*/)
+/* Used with #PROP_CONTEXT_UPDATE, so the signature must be `(bContext *, PointerRNA *)`: the old
+ * 4-argument form worked by accident on native ABIs but traps with "function signature mismatch"
+ * on WebAssembly (indirect call type check). */
+static void rna_userdef_keyconfig_reload_update(bContext *C, PointerRNA * /*ptr*/)
 {
   WM_keyconfig_reload(C);
   USERDEF_TAG_DIRTY;
