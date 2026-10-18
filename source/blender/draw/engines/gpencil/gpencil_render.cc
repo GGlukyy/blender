@@ -412,6 +412,24 @@ static void render_frame(RenderEngine *engine,
 
 void Engine::render_to_image(RenderEngine *engine, RenderLayer *render_layer, const rcti rect)
 {
+#ifdef __EMSCRIPTEN__
+  /* Web: this engine composites onto the CPU copy of the scene render and reads its result back
+   * synchronously; neither exists here (GPU readback is asynchronous), and its read replaced the
+   * whole F12 image with zeros. Skip it: the rest of the scene renders, grease pencil strokes are
+   * missing from F12 renders (they are drawn in the viewport). */
+  {
+    static bool s_warned = false;
+    if (!s_warned) {
+      s_warned = true;
+      fprintf(stderr, "WGPU_FILM grease pencil is skipped in renders on the web build\n");
+      fflush(stderr);
+    }
+  }
+  (void)engine;
+  (void)render_layer;
+  (void)rect;
+  return;
+#endif
   const char *viewname = RE_GetActiveRenderView(engine->re);
 
   const DRWContext *draw_ctx = DRW_context_get();
