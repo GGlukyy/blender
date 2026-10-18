@@ -622,6 +622,7 @@ bool wgpu_film_capture_pending();
 bool wgpu_film_capture_failed_take();
 }
 void RE_web_flush_pending_write(Main *bmain_now, bool pixels_ok);
+void ED_render_web_anim_tick(bContext *C);
 
 static void wm_step_apply_film_result(bContext *C)
 {
@@ -733,6 +734,7 @@ static void wm_main_step(void *arg)
 {
   bContext *C = static_cast<bContext *>(arg);
   wm_step_apply_film_result(C);
+  ED_render_web_anim_tick(C);
   wm_web_poll_pending_file_open(C);
   /* Get events from ghost, handle window events, add to window queues. */
   wm_window_events_process(C);

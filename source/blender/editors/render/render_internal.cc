@@ -6,6 +6,7 @@
  * \ingroup edrend
  */
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 
@@ -233,6 +234,93 @@ static void get_render_operator_frame_range(wmOperator *render_operator,
   }
 }
 
+#ifdef __EMSCRIPTEN__
+/* Web: GPU film pixels arrive asynchronously (no synchronous readback), so a blocking
+ * RE_RenderAnim() loop would write every frame before its pixels exist. Instead one frame is
+ * rendered per ED_render_web_anim_tick() (called from the main loop) once the previous frame's
+ * deferred file write has finished. Image sequences only (movie formats keep the old path). */
+bool RE_web_write_busy();
+void RE_web_set_write_frame_numbers(bool use);
+static struct {
+  bool active;
+  bool first;
+  Main *bmain;
+  Scene *scene;
+  ViewLayer *single_layer;
+  int cur, end, step;
+  int cfra_old;
+  float subframe_old;
+} g_web_anim = {};
+
+static bool web_anim_wanted(Scene *scene, const bool is_animation)
+{
+  return is_animation && !BKE_imtype_is_movie(scene->r.im_format.imtype) &&
+         !RE_seq_render_active(scene, &scene->r);
+}
+
+static void web_anim_start(
+    Main *bmain, Scene *scene, ViewLayer *single_layer, const int sfra, const int efra)
+{
+  g_web_anim = {true,
+                true,
+                bmain,
+                scene,
+                single_layer,
+                sfra,
+                efra,
+                std::max<int>(scene->r.frame_step, 1),
+                scene->r.cfra,
+                scene->r.subframe};
+  fprintf(stderr, "WGPU_FILM anim stepper start %d..%d\n", sfra, efra);
+  fflush(stderr);
+}
+
+void ED_render_web_anim_tick(bContext *C)
+{
+  if (!g_web_anim.active) {
+    return;
+  }
+  Main *bmain = CTX_data_main(C);
+  Scene *scene = g_web_anim.scene;
+  if (g_web_anim.bmain != bmain || BLI_findindex(&bmain->scenes, scene) < 0) {
+    g_web_anim.active = false;
+    return;
+  }
+  if (RE_web_write_busy()) {
+    return;
+  }
+  if (G.is_break || g_web_anim.cur > g_web_anim.end) {
+    g_web_anim.active = false;
+    scene->r.cfra = g_web_anim.cfra_old;
+    scene->r.subframe = g_web_anim.subframe_old;
+    ED_update_for_newframe(bmain, CTX_data_depsgraph_pointer(C));
+    WM_event_add_notifier(C, NC_SCENE | ND_RENDER_RESULT, scene);
+    fprintf(stderr, "WGPU_FILM anim stepper done%s\n", G.is_break ? " (cancelled)" : "");
+    fflush(stderr);
+    G.is_break = false;
+    return;
+  }
+  Render *re = RE_NewSceneRender(scene);
+  G.is_break = false;
+  RE_draw_lock_cb(re, nullptr, nullptr);
+  RE_test_break_cb(re, nullptr, render_break);
+  Image *ima = BKE_image_ensure_viewer(bmain, IMA_TYPE_R_RESULT, "Render Result");
+  if (g_web_anim.first) {
+    BKE_image_signal(bmain, ima, nullptr, IMA_SIGNAL_FREE);
+    BKE_image_backup_render(scene, ima, true);
+    g_web_anim.first = false;
+  }
+  const int frame = g_web_anim.cur;
+  g_web_anim.cur += g_web_anim.step;
+  fprintf(stderr, "WGPU_FILM anim stepper frame %d\n", frame);
+  fflush(stderr);
+  RE_web_set_write_frame_numbers(true);
+  RE_RenderFrame(re, bmain, scene, g_web_anim.single_layer, nullptr, frame, 0.0f, true);
+  RE_web_set_write_frame_numbers(false);
+  WM_event_add_notifier(C, NC_SCENE | ND_RENDER_RESULT, scene);
+}
+#endif
+
 /* executes blocking render */
 static wmOperatorStatus screen_render_exec(bContext *C, wmOperator *op)
 {
@@ -294,6 +382,13 @@ static wmOperatorStatus screen_render_exec(bContext *C, wmOperator *op)
   if (!RE_disable_save_output_allowed(is_animation, *scene, op->reports)) {
     return OPERATOR_CANCELLED;
   }
+
+#ifdef __EMSCRIPTEN__
+  if (web_anim_wanted(scene, is_animation) && !g_web_anim.active) {
+    web_anim_start(mainp, scene, single_layer, frame_start, frame_end);
+    return OPERATOR_FINISHED;
+  }
+#endif
 
   re = RE_NewSceneRender(scene);
 
@@ -981,6 +1076,13 @@ static wmOperatorStatus screen_render_invoke(bContext *C, wmOperator *op, const 
   if (!RE_is_rendering_allowed(*bmain, scene, single_layer, camera_override, op->reports)) {
     return OPERATOR_CANCELLED;
   }
+
+#ifdef __EMSCRIPTEN__
+  if (web_anim_wanted(scene, is_animation) && !g_web_anim.active) {
+    web_anim_start(bmain, scene, single_layer, frame_start, frame_end);
+    return OPERATOR_FINISHED;
+  }
+#endif
 
   if (!is_animation && is_write_still && BKE_imtype_is_movie(scene->r.im_format.imtype)) {
     BKE_report(

@@ -186,6 +186,8 @@ static struct {
   bool active;
   char filepath[FILE_MAX];
 } g_web_pending_write = {};
+/* Set by the web animation stepper: name written files like RE_RenderAnim (frame number). */
+static bool g_web_write_frame_numbers = false;
 #endif
 
 static bool do_write_image_or_movie(Render *re,
@@ -1994,7 +1996,11 @@ void RE_RenderFrame(Render *re,
             scene->r.cfra,
             &rd.im_format,
             (rd.scemode & R_EXTENSION) != 0,
+#ifdef __EMSCRIPTEN__
+            g_web_write_frame_numbers,
+#else
             false,
+#endif
             nullptr);
 
         if (errors.is_empty()) {
@@ -2309,6 +2315,16 @@ static bool do_write_image_or_movie(Render *re,
 }
 
 #ifdef __EMSCRIPTEN__
+void RE_web_set_write_frame_numbers(const bool use)
+{
+  g_web_write_frame_numbers = use;
+}
+
+bool RE_web_write_busy()
+{
+  return g_web_pending_write.active || gpu::wgpu_film_capture_pending();
+}
+
 void RE_web_flush_pending_write(Main *bmain_now, const bool pixels_ok)
 {
   if (!g_web_pending_write.active) {
