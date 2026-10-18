@@ -1115,7 +1115,10 @@ static int stitch_process_data(StitchStateContainer *ssc,
   if (is_active_state) {
     /* set static island to one that is added for preview */
     ssc->static_island %= state->element_map->total_islands;
-    while (!(island_stitch_data[ssc->static_island].stitchableCandidate)) {
+    /* `previous_island` is taken before the modulo above, so it can be >= total_islands and the
+     * check below would never match: bound the walk to one pass over all islands. */
+    int islands_left = state->element_map->total_islands;
+    while (!(island_stitch_data[ssc->static_island].stitchableCandidate) && islands_left-- > 0) {
       ssc->static_island++;
       ssc->static_island %= state->element_map->total_islands;
       /* this is entirely possible if for example limit stitching

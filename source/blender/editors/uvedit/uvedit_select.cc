@@ -2480,7 +2480,14 @@ static int uv_select_edgering(Scene *scene, Object *obedit, UvNearestHit *hit, c
     BMLoop *l_step = l_pair[side];
     /* Disable since we start from the same edge. */
     BM_elem_flag_disable(hit->l->e, BM_ELEM_TAG);
+    /* A ring can never visit more faces than the mesh has. The termination test below depends on
+     * the selection state actually changing; without this guard a ring that never satisfies it
+     * loops forever (observed: UV Edge Ring Select froze the web build). */
+    int steps_left = bm->totface + 2;
     while (l_step) {
+      if (steps_left-- <= 0) {
+        break;
+      }
       if (!uvedit_face_visible_test(scene, l_step->f)) {
         break;
       }
@@ -5890,7 +5897,6 @@ static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend, const 
   const ToolSettings *ts = scene->toolsettings;
   const bool uv_select_sync = (ts->uv_flag & UV_FLAG_SELECT_SYNC);
   ViewLayer *view_layer = CTX_data_view_layer(C);
-
   Vector<Object *> objects = BKE_view_layer_array_from_objects_in_edit_mode_unique_data_with_uvs(
       *bmain, scene, view_layer, nullptr);
 
@@ -5912,8 +5918,11 @@ static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend, const 
     Array<ChangedInfo> *objects_tag;
     bool found_overlap;
   };
-
-  Array<ChangedInfo> objects_tag(objects.size(), {false, false});
+  Array<ChangedInfo> objects_tag(objects.size());
+  for (const int i : IndexRange(objects.size())) {
+    objects_tag[i].has_changed = false;
+    objects_tag[i].has_overlap = false;
+  }
 
   /* Calculate maximum number of tree nodes and prepare initial selection. */
   uint uv_tri_len = 0;
@@ -5991,7 +6000,11 @@ static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend, const 
       /* The UV coordinates winding could be positive of negative,
        * determine it automatically. */
       const int coords_sign = 0;
+      if (face_index % 100 == 0) {
+      }
       BLI_polyfill_calc_arena(uv_verts, face_len, coords_sign, indices, arena);
+      if (face_index % 100 == 0) {
+      }
 
       /* A beauty fill is necessary to remove degenerate triangles that may be produced from the
        * above poly-fill (see #103913), otherwise the overlap tests can fail. */
@@ -6026,7 +6039,6 @@ static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend, const 
   BLI_heap_free(heap, nullptr);
   MEM_delete(uv_verts);
   MEM_delete(indices);
-
   BLI_bvhtree_balance(uv_tree);
 
   /* Use a reusable 1-leaf tree to probe the main tree for overlaps.
@@ -6114,6 +6126,8 @@ static wmOperatorStatus uv_select_overlap(bContext *C, const bool extend, const 
     BLI_bvhtree_update_tree(probe_tree);
     query_data.src_index = i;
     query_data.found_overlap = false;
+    if (i < 3 || i % 200 == 0) {
+    }
 
     BLI_bvhtree_overlap_ex(probe_tree, uv_tree, nullptr, bvh_overlap_fn, &query_data, 1, 0);
   }
