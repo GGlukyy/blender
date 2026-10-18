@@ -169,7 +169,11 @@ struct LightEvalCtx {
     float3 Li = volume_light(light, is_directional, lv) * visibility;
 
     if (light.tilemap_index != LIGHT_NO_SHADOW) {
-      Li *= volume_shadow(uni, views.get(0), light, is_directional, P, lv, srt.extinction_tx);
+      /* `extinction_tx` only exists in the variant with lights; without the branch the other
+       * variant fails to compile (undeclared identifier) on backends that honor the condition. */
+      if (srt.use_volume_light) [[static_branch]] {
+        Li *= volume_shadow(uni, views.get(0), light, is_directional, P, lv, srt.extinction_tx);
+      }
     }
 
     return Li;
