@@ -476,6 +476,10 @@ static std::string webgpu_glsl_patch(const char *stage_define)
   ss << "#else\n";
   ss << "#define gl_PointCoord vec2(0.5)\n";
   ss << "#endif\n";
+  /* No barycentric builtin / geometry shader on WebGPU: the Wireframe node (and edit-mode
+   * wire effects that read gpu_BaryCoord) compile with constant barycentrics, i.e. no lines. */
+  ss << "#define gpu_BaryCoord vec3(1.0 / 3.0)\n";
+  ss << "#define gpu_BaryCoordNoPersp vec3(1.0 / 3.0)\n";
   /* 1D textures are PROMOTED to 2D height-1 textures (WGSL has no 1D array
    * textures, and Tint mis-reads plain-1D textureDimensions). Call sites are
    * rewritten to these helpers by promote_1d_samplers(). */
