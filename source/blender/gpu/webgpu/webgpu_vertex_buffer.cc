@@ -19,7 +19,7 @@ WebGPUVertexBuffer::~WebGPUVertexBuffer()
     ctx->scrub_buffer(buffer_);
   }
   if (buffer_) {
-    wgpuBufferRelease(buffer_);
+    wgpu_buffer_free(buffer_);
   }
   MEM_SAFE_DELETE(data_);
 }
@@ -45,7 +45,11 @@ void WebGPUVertexBuffer::resize_data()
 void WebGPUVertexBuffer::release_data()
 {
   if (buffer_) {
-    wgpuBufferRelease(buffer_);
+    /* Drop stale SSBO/texbuf bindings: the buffer is destroyed after the next submit (M2). */
+    if (WebGPUContext *ctx = static_cast<WebGPUContext *>(Context::get())) {
+      ctx->scrub_buffer(buffer_);
+    }
+    wgpu_buffer_free(buffer_);
     buffer_ = nullptr;
     buffer_size_ = 0;
   }
@@ -62,10 +66,8 @@ void WebGPUVertexBuffer::ensure_buffer()
   if (ctx == nullptr || ctx->device() == nullptr || needed == 0) {
     return;
   }
-  if (buffer_) {
-    wgpuBufferRelease(buffer_);
-    buffer_ = nullptr;
-  }
+  WGPUBuffer old_buffer = buffer_;
+  buffer_ = nullptr;
   /* WGPU requires buffer size be a multiple of 4. */
   buffer_size_ = (needed + 3) & ~size_t(3);
   WGPUBufferDescriptor desc = {};
@@ -73,6 +75,12 @@ void WebGPUVertexBuffer::ensure_buffer()
   desc.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst | WGPUBufferUsage_Storage |
                WGPUBufferUsage_CopySrc;
   buffer_ = wgpuDeviceCreateBuffer(ctx->device(), &desc);
+  if (old_buffer) {
+    /* Growth while bound as SSBO/texbuf: point the bind tables at the new buffer, then destroy the
+     * old one after the next submit (M2). */
+    ctx->rebind_buffer(old_buffer, buffer_);
+    wgpu_buffer_free(old_buffer);
+  }
 }
 
 /* Copy-on-write: updating a live buffer while a pass is recording would either
@@ -94,7 +102,7 @@ bool WebGPUVertexBuffer::cow_if_pass_open(WebGPUContext *ctx)
     return false;
   }
   ctx->rebind_buffer(buffer_, fresh); /* VBOs can be bound as SSBOs. */
-  wgpuBufferRelease(buffer_);
+  wgpu_buffer_free(buffer_);
   buffer_ = fresh;
   return true;
 }

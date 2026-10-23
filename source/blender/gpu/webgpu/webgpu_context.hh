@@ -30,6 +30,16 @@
 /* Tells the page that a (possibly long) shader/pipeline compile starts (rate limited). */
 void wgpu_note_compile();
 
+/* Deferred GPU buffer destruction (sprint "iPad vydrží" M2). emdawnwebgpu's wgpuBufferRelease only
+ * drops the JS handle; the GPUBuffer memory is freed when the JS GC gets to it, which Safari does far
+ * too late (thousands of immediate/staging buffers per minute -> GPU process killed). So buffers that
+ * Blender OWNS are queued here and destroy()ed right after the next queue submit (destroy before the
+ * submit would invalidate commands still being recorded). Never use on AddRef'd (shared) handles. */
+void wgpu_buffer_free(WGPUBuffer b);
+/* Same for textures that Blender owns (NOT texture views sharing a source via AddRef). */
+void wgpu_texture_free(WGPUTexture t);
+void wgpu_flush_buffer_frees();
+
 /* Perf counters for buffer uploads (all queue writes go through wgpu_counted_write). */
 inline long long g_stat_writes = 0, g_stat_write_bytes = 0, g_stat_write_big = 0;
 inline void wgpu_counted_write(WGPUQueue q, WGPUBuffer b, uint64_t off, const void *d, size_t n)
@@ -385,6 +395,9 @@ class WebGPUContext : public Context {
   WGPUBuffer uni_arena_buf_ = nullptr;
   uint64_t uni_arena_off_ = 0, uni_arena_cap_ = 0;
   uint32_t uni_arena_epoch_ = 1;
+  /* Full chunks stay valid until the epoch ends: shaders cache their push-constant slice (and the
+   * chunk handle) per epoch, so a chunk may only be destroyed at uniform_arena_reset(). */
+  std::vector<WGPUBuffer> uni_arena_retired_;
 
  public:
   /* 1x1 dummy storage view of an exact format/dimension, for bindings whose
@@ -416,6 +429,10 @@ class WebGPUContext : public Context {
      * present, and queue writes enqueued afterwards execute after them. */
     uni_arena_off_ = 0;
     uni_arena_epoch_++;
+    for (WGPUBuffer b : uni_arena_retired_) {
+      wgpu_buffer_free(b);
+    }
+    uni_arena_retired_.clear();
   }
   /* Async self-readback of the film texture (GUI F12): pixels are injected
    * into the RenderResult from the main loop when the map completes. */

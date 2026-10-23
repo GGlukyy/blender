@@ -100,8 +100,10 @@ void WebGPUImmediate::end()
     webgpu_immediate_draw(prim_type, vertex_format, buf, vertex_idx);
   }
 
-  /* The recorded commands (and bind groups) hold their own references. */
-  wgpuBufferRelease(buf);
+  /* The recorded commands (and bind groups) hold their own references. The polyline path left the
+   * buffer in the SSBO bind table: drop it before the buffer is destroyed (M2). */
+  ctx->scrub_buffer(buf);
+  wgpu_buffer_free(buf);
 }
 
 }  // namespace blender::gpu

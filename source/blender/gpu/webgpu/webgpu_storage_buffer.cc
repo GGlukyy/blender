@@ -35,7 +35,7 @@ WebGPUStorageBuf::~WebGPUStorageBuf()
     ctx->scrub_buffer(buffer_);
   }
   if (buffer_) {
-    wgpuBufferRelease(buffer_);
+    wgpu_buffer_free(buffer_);
     buffer_ = nullptr;
   }
   MEM_SAFE_DELETE_VOID(data_);
@@ -86,7 +86,7 @@ bool WebGPUStorageBuf::cow_if_pass_open(WebGPUContext *ctx)
     return false;
   }
   ctx->rebind_buffer(buffer_, fresh);
-  wgpuBufferRelease(buffer_);
+  wgpu_buffer_free(buffer_);
   buffer_ = fresh;
   return true;
 }
@@ -198,11 +198,11 @@ void WebGPUStorageBuf::read(void *data)
             /* Keep the host mirror coherent. */
             memcpy(data_, tmp.data(), size_in_bytes_);
           }
-          wgpuBufferRelease(st);
+          wgpu_buffer_free(st);
           return;
         }
       }
-      wgpuBufferRelease(st);
+      wgpu_buffer_free(st);
     }
   }
   /* Fallback: last host-written contents. */

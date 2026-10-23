@@ -31,7 +31,7 @@ WebGPUUniformBuf::~WebGPUUniformBuf()
     ctx->scrub_buffer(buffer_);
   }
   if (buffer_) {
-    wgpuBufferRelease(buffer_);
+    wgpu_buffer_free(buffer_);
   }
   MEM_SAFE_DELETE_VOID(data_);
 }
@@ -79,7 +79,7 @@ bool WebGPUUniformBuf::cow_if_pass_open(WebGPUContext *ctx)
     return false;
   }
   ctx->rebind_buffer(buffer_, fresh);
-  wgpuBufferRelease(buffer_);
+  wgpu_buffer_free(buffer_);
   buffer_ = fresh;
   return true;
 }

@@ -268,12 +268,17 @@ WebGPUTexture::~WebGPUTexture()
     }
   }
   if (texture_) {
-    /* Release only — NEVER wgpuTextureDestroy. Blender frees textures that
-     * pending (unsubmitted) command buffers still reference (legal in GL);
-     * Destroy would poison the whole submit ("Destroyed texture used in a
-     * submit"), dropping every draw in the frame. Dropping the last ref lets
-     * Dawn reclaim the memory once queued work completes. */
-    wgpuTextureRelease(texture_);
+    /* Blender frees textures that pending (unsubmitted) command buffers still reference (legal in
+     * GL); an immediate wgpuTextureDestroy would poison the whole submit ("Destroyed texture used
+     * in a submit"). So owned textures are destroyed only AFTER the next queue submit
+     * (wgpu_texture_free); without destroy Safari keeps the memory until the JS GC runs (iPad
+     * sprint M2). Views share the source texture via AddRef and only drop their reference. */
+    if (is_view_) {
+      wgpuTextureRelease(texture_);
+    }
+    else {
+      wgpu_texture_free(texture_);
+    }
   }
 }
 

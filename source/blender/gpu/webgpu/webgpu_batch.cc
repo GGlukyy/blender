@@ -379,7 +379,7 @@ struct WebGPUBatch::PointExpand {
   {
     for (WGPUBuffer &b : bufs) {
       if (b) {
-        wgpuBufferRelease(b);
+        wgpu_buffer_free(b);
         b = nullptr;
       }
     }
@@ -404,7 +404,7 @@ static WGPUBuffer point_quad_index_buffer(WebGPUContext *ctx, uint32_t points)
   static WGPUDevice s_dev = nullptr;
   if (s_buf == nullptr || s_dev != ctx->device() || s_cap < points) {
     if (s_buf && s_dev == ctx->device()) {
-      wgpuBufferRelease(s_buf);
+      wgpu_buffer_free(s_buf);
     }
     s_cap = std::max<uint32_t>({points, s_cap * 2, 4096u});
     std::vector<uint32_t> idx(size_t(s_cap) * 6);

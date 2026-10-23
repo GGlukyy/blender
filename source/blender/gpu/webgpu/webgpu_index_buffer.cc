@@ -19,7 +19,7 @@ WebGPUIndexBuf::~WebGPUIndexBuf()
     ctx->scrub_buffer(buffer_);
   }
   if (buffer_) {
-    wgpuBufferRelease(buffer_);
+    wgpu_buffer_free(buffer_);
   }
 }
 
@@ -34,7 +34,7 @@ void WebGPUIndexBuf::ensure_buffer()
     return;
   }
   if (buffer_) {
-    wgpuBufferRelease(buffer_);
+    wgpu_buffer_free(buffer_);
     buffer_ = nullptr;
   }
   buffer_size_ = (needed + 3) & ~size_t(3);

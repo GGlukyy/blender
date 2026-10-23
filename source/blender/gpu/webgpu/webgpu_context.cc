@@ -96,6 +96,62 @@ bool wgpu_env_cap_gbuf()
 }
 }  // namespace blender::gpu
 
+#include <mutex>
+static std::mutex g_buf_free_mutex;
+static std::vector<WGPUBuffer> g_buf_free_list;
+static std::vector<WGPUTexture> g_tex_free_list;
+void wgpu_texture_free(WGPUTexture t)
+{
+  if (t == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_buf_free_mutex);
+  g_tex_free_list.push_back(t);
+}
+void wgpu_buffer_free(WGPUBuffer b)
+{
+  if (b == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_buf_free_mutex);
+  g_buf_free_list.push_back(b); /* Keeps the caller's reference until the flush. */
+}
+void wgpu_flush_buffer_frees()
+{
+  std::vector<WGPUBuffer> list;
+  std::vector<WGPUTexture> tlist;
+  {
+    std::lock_guard<std::mutex> lock(g_buf_free_mutex);
+    list.swap(g_buf_free_list);
+    tlist.swap(g_tex_free_list);
+  }
+  /* WGPU_NO_DESTROY=buf|tex|all (debug): skip destroy() and only release, like before M2. */
+  static const char *nd = getenv("WGPU_NO_DESTROY");
+  const bool no_buf = nd && (strstr(nd, "buf") || strstr(nd, "all"));
+  const bool no_tex = nd && (strstr(nd, "tex") || strstr(nd, "all"));
+  for (WGPUTexture t : tlist) {
+    if (!no_tex) {
+      wgpuTextureDestroy(t);
+    }
+    wgpuTextureRelease(t);
+  }
+  /* WGPU_NO_DESTROY_USAGE=<bitmask> (debug): keep (release only) buffers whose usage has any of the bits. */
+  static const char *nu = getenv("WGPU_NO_DESTROY_USAGE");
+  static const uint64_t nu_mask = nu ? strtoull(nu, nullptr, 0) : 0;
+  for (WGPUBuffer b : list) {
+    const uint64_t usage = wgpuBufferGetUsage(b);
+    /* Mesh VBOs (Vertex|CopySrc) are NOT destroyed: destroying them makes a freshly added mesh
+     * (UV Sphere via F3) draw without its surface although no WebGPU error is reported — cause
+     * unknown (parity #17), left to the GC. Immediate/staging/uniform/index buffers (the thousands
+     * per minute) are destroyed. */
+    const bool keep_vbo = (usage & WGPUBufferUsage_Vertex) && (usage & WGPUBufferUsage_CopySrc);
+    if (!no_buf && !keep_vbo && (nu_mask == 0 || (usage & nu_mask) == 0)) {
+      wgpuBufferDestroy(b);
+    }
+    wgpuBufferRelease(b);
+  }
+}
+
 namespace {
 WGPUBuffer g_capture_buf = nullptr;
 size_t g_capture_cap = 0;
@@ -471,6 +527,7 @@ void WebGPUContext::flush_encoder()
   WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder_, &cb_desc);
   if (queue_ && cmd) {
     wgpuQueueSubmit(queue_, 1, &cmd);
+    wgpu_flush_buffer_frees();
   }
   if (cmd) {
     wgpuCommandBufferRelease(cmd);
@@ -705,17 +762,17 @@ void WebGPUContext::occlusion_pool_read(uint32_t count, uint32_t *r_values)
   WGPUBuffer map_buf = wgpuDeviceCreateBuffer(device_, &md);
   if (resolve_buf == nullptr || map_buf == nullptr) {
     if (resolve_buf) {
-      wgpuBufferRelease(resolve_buf);
+      wgpu_buffer_free(resolve_buf);
     }
     if (map_buf) {
-      wgpuBufferRelease(map_buf);
+      wgpu_buffer_free(map_buf);
     }
     return;
   }
   wgpuCommandEncoderResolveQuerySet(enc, occ_qset_, 0, count, resolve_buf, 0);
   wgpuCommandEncoderCopyBufferToBuffer(enc, resolve_buf, 0, map_buf, 0, size);
   flush_encoder();
-  wgpuBufferRelease(resolve_buf);
+  wgpu_buffer_free(resolve_buf);
 
   struct OccMapCtx {
     WGPUBuffer buf;
@@ -743,7 +800,7 @@ void WebGPUContext::occlusion_pool_read(uint32_t count, uint32_t *r_values)
       }
       wgpuBufferUnmap(mc->buf);
     }
-    wgpuBufferRelease(mc->buf);
+    wgpu_buffer_free(mc->buf);
     delete mc;
   };
   wgpuBufferMapAsync(map_buf, WGPUMapMode_Read, 0, size, cb);
@@ -807,7 +864,7 @@ void WebGPUContext::film_capture_async(WGPUTexture tex, WGPUTextureFormat fmt, i
   render_pass_end();
   WGPUCommandEncoder enc = ensure_encoder();
   if (enc == nullptr) {
-    wgpuBufferRelease(map_buf);
+    wgpu_buffer_free(map_buf);
     return;
   }
   WGPUTexelCopyTextureInfo src = {};
@@ -859,7 +916,7 @@ void WebGPUContext::film_capture_async(WGPUTexture tex, WGPUTextureFormat fmt, i
     }
     g_film_result.failed = !got_pixels;
     g_film_result.pending = false;
-    wgpuBufferRelease(mc->buf);
+    wgpu_buffer_free(mc->buf);
     delete mc;
   };
   g_film_result.pending = true;
@@ -1009,7 +1066,7 @@ void WebGPUContext::depth_snapshot_capture()
     render_pass_end();
     WGPUCommandEncoder enc = ensure_encoder();
     if (enc == nullptr) {
-      wgpuBufferRelease(map_buf);
+      wgpu_buffer_free(map_buf);
       continue;
     }
     WGPUTexelCopyTextureInfo src = {};
@@ -1069,7 +1126,7 @@ void WebGPUContext::depth_snapshot_capture()
           wgpuBufferUnmap(mc->buf);
         }
       }
-      wgpuBufferRelease(mc->buf);
+      wgpu_buffer_free(mc->buf);
       delete mc;
     };
     wgpuBufferMapAsync(map_buf, WGPUMapMode_Read, 0, size, cb);
@@ -1087,7 +1144,7 @@ bool WebGPUContext::uniform_arena_alloc(uint64_t size, WGPUBuffer &r_buf, uint64
   const uint64_t aligned = (size + 255u) & ~uint64_t(255u);
   if (uni_arena_buf_ == nullptr || uni_arena_off_ + aligned > uni_arena_cap_) {
     if (uni_arena_buf_) {
-      wgpuBufferRelease(uni_arena_buf_);
+      uni_arena_retired_.push_back(uni_arena_buf_); /* Destroyed at uniform_arena_reset(). */
     }
     uni_arena_cap_ = std::max<uint64_t>(aligned, 256 * 1024);
     WGPUBufferDescriptor bd = {};
@@ -2312,7 +2369,7 @@ bool WebGPUContext::read_small_sync(WGPUTexture tex,
   }
   WGPUCommandEncoder enc = ensure_encoder();
   if (enc == nullptr) {
-    wgpuBufferRelease(scratch);
+    wgpu_buffer_free(scratch);
     return false;
   }
   WGPUTexelCopyTextureInfo src = {};
@@ -2330,7 +2387,7 @@ bool WebGPUContext::read_small_sync(WGPUTexture tex,
 
   std::vector<uint8_t> raw(need);
   const bool ok = map_read_sync(scratch, need, raw.data());
-  wgpuBufferRelease(scratch);
+  wgpu_buffer_free(scratch);
   if (!ok) {
     return false;
   }
@@ -2444,6 +2501,7 @@ bool WebGPUContext::read_color_sync(WGPUTexture tex,
   WGPUCommandBufferDescriptor cbd = {};
   WGPUCommandBuffer cb = wgpuCommandEncoderFinish(enc, &cbd);
   wgpuQueueSubmit(queue_, 1, &cb);
+  wgpu_flush_buffer_frees();
   wgpuCommandBufferRelease(cb);
   wgpuCommandEncoderRelease(enc);
 

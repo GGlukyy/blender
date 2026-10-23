@@ -490,6 +490,31 @@ int main(int argc,
                   l = (sz.depthOrArrayLayers !== undefined ? sz.depthOrArrayLayers : sz[2]) || 1;
             return gtrack("tex", gct(d), w * h * l * 4 * (d.mipLevelCount > 1 ? 1.34 : 1));
           };
+          if ($3) {
+            /* WGPU_DESTROYLOG=1 (debug): report every bind group / vertex / index buffer use of a
+             * buffer that was already destroy()ed (it would invalidate the whole submit). */
+            const gdead = new WeakSet(), gseen = {};
+            const gdestroy0 = GPUBuffer.prototype.destroy;
+            GPUBuffer.prototype.destroy = function () { gdead.add(this); return gdestroy0.apply(this, arguments); };
+            const gwhine = (where, b) => {
+              if (!gdead.has(b)) return;
+              const k = where + " " + b.usage + " " + b.size;
+              gseen[k] = (gseen[k] || 0) + 1;
+              if (gseen[k] <= 3) console.log("DEADBUF " + where + " usage=0x" + b.usage.toString(16) + " size=" + b.size + " label='" + b.label + "' n=" + gseen[k]);
+            };
+            const gbg = gdev.createBindGroup.bind(gdev);
+            const gbgs = new WeakMap();
+            gdev.createBindGroup = (d) => {
+              const bs = [];
+              for (const e of d.entries) if (e.resource && e.resource.buffer) { gwhine("bindgroup", e.resource.buffer); bs.push(e.resource.buffer); }
+              const g = gbg(d); gbgs.set(g, bs); return g;
+            };
+            const gsbg = GPURenderPassEncoder.prototype.setBindGroup;
+            GPURenderPassEncoder.prototype.setBindGroup = function (i, g) { const bs = gbgs.get(g); if (bs) for (const b of bs) gwhine("setBindGroup" + i, b); return gsbg.apply(this, arguments); };
+            for (const [P, fn, idx] of [[GPURenderPassEncoder.prototype, "setVertexBuffer", 1], [GPURenderPassEncoder.prototype, "setIndexBuffer", 0], [GPURenderPassEncoder.prototype, "drawIndirect", 0], [GPURenderPassEncoder.prototype, "drawIndexedIndirect", 0]]) {
+              const o = P[fn]; P[fn] = function () { if (arguments[idx]) gwhine(fn, arguments[idx]); return o.apply(this, arguments); };
+            }
+          }
           if (typeof GPUBuffer !== "undefined") gdestroy("buf", GPUBuffer.prototype);
           if (typeof GPUTexture !== "undefined") gdestroy("tex", GPUTexture.prototype);
           gdev.lost.then(
@@ -503,7 +528,7 @@ int main(int argc,
           if (e !== "unwind") console.error("pthread WebGPU device acquire failed:", e);
         }
       })();
-    }, cap_buf, cap_ssbo, cap_stage);
+    }, cap_buf, cap_ssbo, cap_stage, getenv("WGPU_DESTROYLOG") != nullptr);
     emscripten_exit_with_live_runtime();
     return 0;
   }
