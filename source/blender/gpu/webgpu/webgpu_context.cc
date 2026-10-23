@@ -116,8 +116,12 @@ void wgpu_buffer_free(WGPUBuffer b)
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
   g_buf_free_list.push_back(b); /* Keeps the caller's reference until the flush. */
 }
+bool wgpu_any_context_recording();
 void wgpu_flush_buffer_frees()
 {
+  if (wgpu_any_context_recording()) {
+    return; /* Keep the lists; retried at the next submit. */
+  }
   std::vector<WGPUBuffer> list;
   std::vector<WGPUTexture> tlist;
   {
@@ -140,11 +144,11 @@ void wgpu_flush_buffer_frees()
   static const uint64_t nu_mask = nu ? strtoull(nu, nullptr, 0) : 0;
   for (WGPUBuffer b : list) {
     const uint64_t usage = wgpuBufferGetUsage(b);
-    /* Mesh VBOs (Vertex|CopySrc) are NOT destroyed: destroying them makes a freshly added mesh
-     * (UV Sphere via F3) draw without its surface although no WebGPU error is reported — cause
-     * unknown (parity #17), left to the GC. Immediate/staging/uniform/index buffers (the thousands
-     * per minute) are destroyed. */
-    const bool keep_vbo = (usage & WGPUBufferUsage_Vertex) && (usage & WGPUBufferUsage_CopySrc);
+    /* WGPU_KEEP=vbo|ssbo (debug bisect): keep mesh VBOs / indirect storage buffers undestroyed. */
+    static const char *keep = getenv("WGPU_KEEP");
+    const bool is_ssbo = (usage & WGPUBufferUsage_Indirect) != 0;
+    const bool is_vbo = (usage & WGPUBufferUsage_Vertex) && (usage & WGPUBufferUsage_CopySrc) && !is_ssbo;
+    const bool keep_vbo = keep && ((is_vbo && strstr(keep, "vbo")) || (is_ssbo && strstr(keep, "ssbo")));
     if (!no_buf && !keep_vbo && (nu_mask == 0 || (usage & nu_mask) == 0)) {
       wgpuBufferDestroy(b);
     }
@@ -163,7 +167,7 @@ volatile int g_capture_ready = 0; /* 0 = pending, 1 = ok, -1 = fail */
 namespace blender::gpu {
 
 /* All live contexts, for cross-context scrubbing of freed texture wrappers. */
-static std::vector<WebGPUContext *> g_all_contexts;
+std::vector<WebGPUContext *> g_all_contexts;
 
 void WebGPUContext::scrub_texture_all_contexts(WebGPUTexture *tex)
 {
@@ -179,6 +183,26 @@ void WebGPUContext::clear_bind_group_cache_all_contexts()
     ctx->clear_bind_group_cache();
   }
 }
+
+}  // namespace blender::gpu
+
+void wgpu_scrub_buffer_all_contexts(WGPUBuffer buf)
+{
+  for (blender::gpu::WebGPUContext *ctx : blender::gpu::g_all_contexts) {
+    ctx->scrub_buffer(buf);
+  }
+}
+bool wgpu_any_context_recording()
+{
+  for (blender::gpu::WebGPUContext *ctx : blender::gpu::g_all_contexts) {
+    if (ctx->pass_open()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+namespace blender::gpu {
 
 static uint32_t align256(uint32_t v)
 {
@@ -527,13 +551,15 @@ void WebGPUContext::flush_encoder()
   WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder_, &cb_desc);
   if (queue_ && cmd) {
     wgpuQueueSubmit(queue_, 1, &cmd);
-    wgpu_flush_buffer_frees();
   }
   if (cmd) {
     wgpuCommandBufferRelease(cmd);
   }
   wgpuCommandEncoderRelease(encoder_);
   encoder_ = nullptr;
+  /* After encoder_ is cleared (this context no longer records) — and only destroy while no OTHER
+   * context (DRW viewport / preview) still has recorded-but-unsubmitted work that may use them. */
+  wgpu_flush_buffer_frees();
 }
 
 void WebGPUContext::submit()

@@ -28,7 +28,7 @@ WebGPUUniformBuf::WebGPUUniformBuf(size_t size, const char *name) : UniformBuf(s
 WebGPUUniformBuf::~WebGPUUniformBuf()
 {
   if (WebGPUContext *ctx = static_cast<WebGPUContext *>(Context::get())) {
-    ctx->scrub_buffer(buffer_);
+    wgpu_scrub_buffer_all_contexts(buffer_);
   }
   if (buffer_) {
     wgpu_buffer_free(buffer_);

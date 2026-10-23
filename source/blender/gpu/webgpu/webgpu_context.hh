@@ -39,6 +39,8 @@ void wgpu_buffer_free(WGPUBuffer b);
 /* Same for textures that Blender owns (NOT texture views sharing a source via AddRef). */
 void wgpu_texture_free(WGPUTexture t);
 void wgpu_flush_buffer_frees();
+/* Drop `buf` from the bind tables of EVERY context (frees can come from another context/thread). */
+void wgpu_scrub_buffer_all_contexts(WGPUBuffer buf);
 
 /* Perf counters for buffer uploads (all queue writes go through wgpu_counted_write). */
 inline long long g_stat_writes = 0, g_stat_write_bytes = 0, g_stat_write_big = 0;

@@ -448,6 +448,11 @@ int main(int argc,
           /* Device loss (iPad memory pressure / app switch) freezes the canvas silently; the page
            * (demo/src/main.js scan) turns this line into a "GPU lost, reload" banner. */
           const gdev = Module["preinitializedWebGPUDevice"];
+          /* Dawn validation errors are otherwise only a (rate limited) browser warning. */
+          let gerrs = 0;
+          gdev.addEventListener("uncapturederror", (e) => {
+            if (gerrs++ < 30) console.log("WGPU_UNCAPTURED " + String(e.error.message).slice(0, 400));
+          });
           /* Sprint "iPad vydrží" M0/M2: live GPU buffer/texture counters for the telemetry
            * (demo/src/telemetry.js, channel "blender-gpumem"). A resource counts as live until
            * destroy() was called or the JS object was garbage collected (gc_* = freed only by GC,

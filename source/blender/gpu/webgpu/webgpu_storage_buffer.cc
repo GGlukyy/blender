@@ -32,7 +32,7 @@ WebGPUStorageBuf::WebGPUStorageBuf(size_t size, GPUUsageType usage, const char *
 WebGPUStorageBuf::~WebGPUStorageBuf()
 {
   if (WebGPUContext *ctx = static_cast<WebGPUContext *>(Context::get())) {
-    ctx->scrub_buffer(buffer_);
+    wgpu_scrub_buffer_all_contexts(buffer_);
   }
   if (buffer_) {
     wgpu_buffer_free(buffer_);

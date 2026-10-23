@@ -16,7 +16,7 @@ namespace blender::gpu {
 WebGPUVertexBuffer::~WebGPUVertexBuffer()
 {
   if (WebGPUContext *ctx = static_cast<WebGPUContext *>(Context::get())) {
-    ctx->scrub_buffer(buffer_);
+    wgpu_scrub_buffer_all_contexts(buffer_);
   }
   if (buffer_) {
     wgpu_buffer_free(buffer_);
@@ -47,7 +47,7 @@ void WebGPUVertexBuffer::release_data()
   if (buffer_) {
     /* Drop stale SSBO/texbuf bindings: the buffer is destroyed after the next submit (M2). */
     if (WebGPUContext *ctx = static_cast<WebGPUContext *>(Context::get())) {
-      ctx->scrub_buffer(buffer_);
+      wgpu_scrub_buffer_all_contexts(buffer_);
     }
     wgpu_buffer_free(buffer_);
     buffer_ = nullptr;
