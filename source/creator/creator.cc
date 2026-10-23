@@ -447,8 +447,54 @@ int main(int argc,
               await adapter.requestDevice({ requiredFeatures, requiredLimits });
           /* Device loss (iPad memory pressure / app switch) freezes the canvas silently; the page
            * (demo/src/main.js scan) turns this line into a "GPU lost, reload" banner. */
-          Module["preinitializedWebGPUDevice"].lost.then(
-              (i) => { console.log("WEBGPU_LOST " + i.reason + " " + i.message); _blender_web_device_lost(); });
+          const gdev = Module["preinitializedWebGPUDevice"];
+          /* Sprint "iPad vydrží" M0/M2: live GPU buffer/texture counters for the telemetry
+           * (demo/src/telemetry.js, channel "blender-gpumem"). A resource counts as live until
+           * destroy() was called or the JS object was garbage collected (gc_* = freed only by GC,
+           * which Safari does much later than Chrome). */
+          const gmem = new BroadcastChannel("blender-gpumem");
+          const gst = {buf: 0, buf_mb: 0, tex: 0, tex_mb: 0, buf_new: 0, buf_destroyed: 0, buf_gc: 0,
+                       tex_new: 0, tex_destroyed: 0, tex_gc: 0};
+          let glast = 0, gbytes = {buf: 0, tex: 0};
+          const gpost = (force, extra) => {
+            const n = performance.now();
+            if (!force && n - glast < 1000) return;
+            glast = n;
+            gst.buf_mb = Math.round(gbytes.buf / 1048576); gst.tex_mb = Math.round(gbytes.tex / 1048576);
+            gmem.postMessage(Object.assign({}, gst, extra || {}));
+          };
+          const grecs = new WeakMap();
+          const greg = new FinalizationRegistry((r) => {
+            if (!r.dead) { r.dead = true; gst[r.k]--; gbytes[r.k] -= r.size; gst[r.k + "_gc"]++; }
+          });
+          const gtrack = (k, obj, size) => {
+            const r = {k, size, dead: false};
+            grecs.set(obj, r); greg.register(obj, r);
+            gst[k]++; gst[k + "_new"]++; gbytes[k] += size;
+            gpost(false);
+            return obj;
+          };
+          const gdestroy = (k, proto) => {
+            const orig = proto.destroy;
+            proto.destroy = function () {
+              const r = grecs.get(this);
+              if (r && !r.dead) { r.dead = true; gst[k]--; gbytes[k] -= r.size; gst[k + "_destroyed"]++; }
+              gpost(false);
+              return orig.apply(this, arguments);
+            };
+          };
+          const gcb = gdev.createBuffer.bind(gdev), gct = gdev.createTexture.bind(gdev);
+          gdev.createBuffer = (d) => gtrack("buf", gcb(d), d.size);
+          gdev.createTexture = (d) => {
+            const sz = d.size, w = sz.width !== undefined ? sz.width : sz[0], h = (sz.height !== undefined ? sz.height : sz[1]) || 1,
+                  l = (sz.depthOrArrayLayers !== undefined ? sz.depthOrArrayLayers : sz[2]) || 1;
+            return gtrack("tex", gct(d), w * h * l * 4 * (d.mipLevelCount > 1 ? 1.34 : 1));
+          };
+          if (typeof GPUBuffer !== "undefined") gdestroy("buf", GPUBuffer.prototype);
+          if (typeof GPUTexture !== "undefined") gdestroy("tex", GPUTexture.prototype);
+          gdev.lost.then(
+              (i) => { gpost(true, {lost_reason: i.reason, lost_message: String(i.message).slice(0, 300)});
+                       console.log("WEBGPU_LOST " + i.reason + " " + i.message); _blender_web_device_lost(); });
           _blender_web_device_ready();
         }
         catch (e) {

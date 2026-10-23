@@ -1444,7 +1444,10 @@ void WebGPUContext::present_backbuffer(int w, int h)
       }
       s_max_ms = std::max(s_max_ms, frame_ms);
       s_acc_n++;
-      if (s_acc_n >= 30 && g_perf_enabled) {
+      static double s_last_post_ms = 0.0;
+      /* Every 30 frames, or at least once a second (idle frames are rare; telemetry needs fresh numbers). */
+      if ((s_acc_n >= 30 || (s_acc_n >= 1 && now_ms - s_last_post_ms >= 1000.0)) && g_perf_enabled) {
+        s_last_post_ms = now_ms;
         extern int g_stat_tex_count, g_stat_imm_buffers;
         extern long long g_stat_tex_bytes, g_stat_imm_bytes;
         wgpu_perf_post(s_frame, s_acc_ms / s_acc_n, s_max_ms, g_stat_submits, g_stat_passes,
