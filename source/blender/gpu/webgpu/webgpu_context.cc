@@ -1502,7 +1502,6 @@ void WebGPUContext::present_backbuffer(int w, int h)
   /* No wgpuSurfacePresent on emdawnwebgpu: the browser presents the canvas
    * automatically when this task yields (requestAnimationFrame-driven loop). */
   wgpuTextureRelease(st.texture);
-  wgpu_flush_buffer_frees(); /* Present: retry frees that were held back while another context recorded. */
   depth_snapshot_tick();
 
   /* Perf stats: per-frame submit/pass/bindgroup counts (high submit counts are
