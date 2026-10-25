@@ -6,6 +6,7 @@
  * \ingroup gpu
  */
 
+#include <atomic>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -98,15 +99,18 @@ bool wgpu_env_cap_gbuf()
 
 #include <mutex>
 static std::mutex g_buf_free_mutex;
-static std::vector<WGPUBuffer> g_buf_free_list;
-static std::vector<WGPUTexture> g_tex_free_list;
+/* Each entry carries the free-sequence number at free time: it may only be destroyed once no
+ * recording context started its encoder BEFORE the free (see WebGPUContext::recording_seq). */
+std::atomic<uint64_t> g_free_seq{0};
+static std::vector<std::pair<WGPUBuffer, uint64_t>> g_buf_free_list;
+static std::vector<std::pair<WGPUTexture, uint64_t>> g_tex_free_list;
 void wgpu_texture_free(WGPUTexture t)
 {
   if (t == nullptr) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
-  g_tex_free_list.push_back(t);
+  g_tex_free_list.push_back({t, ++g_free_seq});
 }
 void wgpu_buffer_free(WGPUBuffer b)
 {
@@ -114,20 +118,37 @@ void wgpu_buffer_free(WGPUBuffer b)
     return;
   }
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
-  g_buf_free_list.push_back(b); /* Keeps the caller's reference until the flush. */
+  g_buf_free_list.push_back({b, ++g_free_seq}); /* Keeps the caller's reference until the flush. */
 }
-bool wgpu_any_context_recording();
+uint64_t wgpu_min_recording_seq();
 void wgpu_flush_buffer_frees()
 {
-  if (wgpu_any_context_recording()) {
-    return; /* Keep the lists; retried at the next submit. */
-  }
+  /* Only entries freed before every recording context's encoder started are safe to destroy. */
+  const uint64_t limit = wgpu_min_recording_seq();
   std::vector<WGPUBuffer> list;
   std::vector<WGPUTexture> tlist;
   {
     std::lock_guard<std::mutex> lock(g_buf_free_mutex);
-    list.swap(g_buf_free_list);
-    tlist.swap(g_tex_free_list);
+    std::vector<std::pair<WGPUBuffer, uint64_t>> keep_b;
+    for (auto &e : g_buf_free_list) {
+      if (e.second <= limit) {
+        list.push_back(e.first);
+      }
+      else {
+        keep_b.push_back(e);
+      }
+    }
+    g_buf_free_list.swap(keep_b);
+    std::vector<std::pair<WGPUTexture, uint64_t>> keep_t;
+    for (auto &e : g_tex_free_list) {
+      if (e.second <= limit) {
+        tlist.push_back(e.first);
+      }
+      else {
+        keep_t.push_back(e);
+      }
+    }
+    g_tex_free_list.swap(keep_t);
   }
   /* WGPU_NO_DESTROY=buf|tex|all (debug): skip destroy() and only release, like before M2. */
   static const char *nd = getenv("WGPU_NO_DESTROY");
@@ -192,14 +213,13 @@ void wgpu_scrub_buffer_all_contexts(WGPUBuffer buf)
     ctx->scrub_buffer(buf);
   }
 }
-bool wgpu_any_context_recording()
+uint64_t wgpu_min_recording_seq()
 {
+  uint64_t m = UINT64_MAX;
   for (blender::gpu::WebGPUContext *ctx : blender::gpu::g_all_contexts) {
-    if (ctx->pass_open()) {
-      return true;
-    }
+    m = std::min(m, ctx->recording_seq());
   }
-  return false;
+  return m;
 }
 
 namespace blender::gpu {
@@ -409,6 +429,7 @@ WGPUCommandEncoder WebGPUContext::ensure_encoder()
   if (encoder_ == nullptr && device_ != nullptr) {
     WGPUCommandEncoderDescriptor desc = {};
     encoder_ = wgpuDeviceCreateCommandEncoder(device_, &desc);
+    encoder_seq_ = g_free_seq.load();
   }
   return encoder_;
 }

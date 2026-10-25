@@ -94,6 +94,7 @@ class WebGPUContext : public Context {
 
   /* Per-frame command recording. Created lazily; flushed on submit(). */
   WGPUCommandEncoder encoder_ = nullptr;
+  uint64_t encoder_seq_ = 0; /* g_free_seq when encoder_ was created (see wgpu_flush_buffer_frees). */
   WGPURenderPassEncoder render_pass_ = nullptr;
   WebGPUFrameBuffer *render_pass_fb_ = nullptr;
 
@@ -173,6 +174,8 @@ class WebGPUContext : public Context {
   void deactivate() override
   {
     immDeactivate();
+    /* K3b: an idle context must not keep an unsubmitted encoder (it blocks freeing buffers). */
+    submit();
   }
   void begin_frame() override {}
   void end_frame() override {}
@@ -260,6 +263,14 @@ class WebGPUContext : public Context {
   }
   /* True when recorded-but-unsubmitted GPU work may reference live buffers
    * (open pass OR batched encoder content) — the copy-on-write trigger. */
+  /* Buffers freed with a sequence number <= this cannot be referenced by our recorded work. */
+  uint64_t recording_seq() const
+  {
+    if (encoder_ != nullptr) {
+      return encoder_seq_;
+    }
+    return render_pass_ != nullptr ? 0 : UINT64_MAX;
+  }
   bool pass_open() const
   {
     return render_pass_ != nullptr || encoder_ != nullptr;
