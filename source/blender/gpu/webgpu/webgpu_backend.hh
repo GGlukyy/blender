@@ -174,6 +174,20 @@ class WebGPUBackend : public GPUBackend {
   void compute_dispatch(int groups_x_len, int groups_y_len, int groups_z_len) override
   {
     WebGPUContext *ctx = WebGPUContext::get();
+    /* ?nocompute=1 (iPad H4 diagnostic): skip all compute; draws will be wrong but must not abort. */
+    static const bool s_no_compute = getenv("WGPU_NO_COMPUTE") != nullptr;
+    if (s_no_compute) {
+      return;
+    }
+    /* Step log for the first dispatches: the last line before an abort() names the culprit. */
+    static int s_step_n = 0;
+    const bool step_log = s_step_n < 16;
+    auto step = [&](const char *what) {
+      if (step_log) {
+        fprintf(stderr, "WGPU_DISPATCH step #%d %s\n", s_step_n, what);
+        fflush(stderr);
+      }
+    };
     {
       static int s_disp_entry = 0;
       if (s_disp_entry < 8) {
@@ -224,7 +238,9 @@ class WebGPUBackend : public GPUBackend {
       sh->spec_entries(sh->compute_wgsl(), spec_consts);
       d.compute.constantCount = spec_consts.size();
       d.compute.constants = spec_consts.empty() ? nullptr : spec_consts.data();
+      step("create_compute_pipeline");
       pipe = wgpuDeviceCreateComputePipeline(ctx->device(), &d);
+      step("compute_pipeline_created");
       if (pipe_layout) {
         wgpuPipelineLayoutRelease(pipe_layout);
       }
@@ -245,7 +261,9 @@ class WebGPUBackend : public GPUBackend {
     }
     ctx->render_pass_end();
     WGPUBindGroupLayout bgl = wgpuComputePipelineGetBindGroupLayout(pipe, 0);
+    step("build_bind_group");
     WGPUBindGroup bg = ctx->build_bind_group(sh, sh->compute_bindings(), bgl);
+    step("bind_group_built");
     WGPUCommandEncoder enc = ctx->ensure_encoder();
     if (enc == nullptr) {
       wgpuBindGroupLayoutRelease(bgl);
@@ -272,6 +290,7 @@ class WebGPUBackend : public GPUBackend {
       wgpuComputePassEncoderDispatchWorkgroups(
           cpass, uint32_t(groups_x_len), uint32_t(groups_y_len), uint32_t(groups_z_len));
     }
+    step("pass_end");
     wgpuComputePassEncoderEnd(cpass);
     wgpuComputePassEncoderRelease(cpass);
     if (bg) {
@@ -279,8 +298,14 @@ class WebGPUBackend : public GPUBackend {
     }
     wgpuBindGroupLayoutRelease(bgl);
     /* Isolate this dispatch in its own command buffer (see flush_encoder). */
+    step("flush_encoder");
     ctx->flush_encoder();
+    step("flushed");
     debug_sum_ssbos(ctx, sh);
+    step("done");
+    if (step_log) {
+      s_step_n++;
+    }
   }
   /* DEBUG: ENV.WGPU_SUM_SHADER=<substr> — after each matching dispatch, copy
    * bound SSBO slots (and WGPU_SUM_TEX=<name substr> texture layers) into
