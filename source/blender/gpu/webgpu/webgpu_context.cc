@@ -1074,6 +1074,9 @@ uint32_t g_depth_serial = 0;
 bool g_depth_timer_armed = false;
 double g_depth_dirty_ms = 0.0;
 constexpr double DEPTH_IDLE_MS = 120.0;
+/* Readback buffers are kept for reuse (same size) instead of created+destroyed per snapshot:
+ * WebKit does not return destroyed buffer memory promptly (iPad crash, H5). */
+std::vector<std::pair<uint64_t, WGPUBuffer>> g_depth_free_bufs;
 }  // namespace
 
 uint64_t webgpu_buffer_gen_next()
@@ -1183,7 +1186,17 @@ void WebGPUContext::depth_snapshot_capture()
     md.label = {"depth_snapshot", WGPU_STRLEN};
     md.size = size;
     md.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-    WGPUBuffer map_buf = wgpuDeviceCreateBuffer(device_, &md);
+    WGPUBuffer map_buf = nullptr;
+    for (size_t i = 0; i < g_depth_free_bufs.size(); i++) {
+      if (g_depth_free_bufs[i].first == size) {
+        map_buf = g_depth_free_bufs[i].second;
+        g_depth_free_bufs.erase(g_depth_free_bufs.begin() + i);
+        break;
+      }
+    }
+    if (map_buf == nullptr) {
+      map_buf = wgpuDeviceCreateBuffer(device_, &md);
+    }
     if (map_buf == nullptr) {
       continue;
     }
@@ -1211,8 +1224,9 @@ void WebGPUContext::depth_snapshot_capture()
       WGPUBuffer buf;
       const WebGPUTexture *tex;
       uint32_t serial, w, h, bpr;
+      uint64_t size;
     };
-    MapCtx *mc = new MapCtx{map_buf, tex, s.serial, w, h, bpr};
+    MapCtx *mc = new MapCtx{map_buf, tex, s.serial, w, h, bpr, size};
     WGPUBufferMapCallbackInfo cb = {};
     cb.mode = WGPUCallbackMode_AllowSpontaneous;
     cb.userdata1 = mc;
@@ -1247,10 +1261,26 @@ void WebGPUContext::depth_snapshot_capture()
               fflush(stderr);
             }
           }
-          wgpuBufferUnmap(mc->buf);
         }
       }
-      wgpu_buffer_free(mc->buf);
+      bool keep = false;
+      if (status == WGPUMapAsyncStatus_Success) {
+        wgpuBufferUnmap(mc->buf);
+        /* Drop cached buffers of other sizes (window resized), keep at most 2. */
+        for (size_t i = g_depth_free_bufs.size(); i-- > 0;) {
+          if (g_depth_free_bufs[i].first != mc->size) {
+            wgpu_buffer_free(g_depth_free_bufs[i].second);
+            g_depth_free_bufs.erase(g_depth_free_bufs.begin() + i);
+          }
+        }
+        if (g_depth_free_bufs.size() < 2) {
+          g_depth_free_bufs.emplace_back(mc->size, mc->buf);
+          keep = true;
+        }
+      }
+      if (!keep) {
+        wgpu_buffer_free(mc->buf);
+      }
       delete mc;
     };
     wgpuBufferMapAsync(map_buf, WGPUMapMode_Read, 0, size, cb);
