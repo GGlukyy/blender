@@ -42,7 +42,9 @@
 #define SPHERE_PROBE_SH_GROUP_SIZE 256
 #define SPHERE_PROBE_SH_SAMPLES_PER_GROUP 64
 /* Must be power of two for correct partitioning. */
-#define SPHERE_PROBE_ATLAS_MAX_SUBDIV 12
+/* Web port (iPad, H6): 2048² instead of 4096² atlas — each rgba16f atlas drops 179 MB -> 45 MB. Not guarded by
+ * __EMSCRIPTEN__ on purpose: the shader preprocessor runs natively and must agree with the C++ side. */
+#define SPHERE_PROBE_ATLAS_MAX_SUBDIV 11
 #define SPHERE_PROBE_ATLAS_RES (1 << SPHERE_PROBE_ATLAS_MAX_SUBDIV)
 /* Maximum number of thread-groups dispatched for remapping a probe to octahedral mapping. */
 #define SPHERE_PROBE_MAX_HARMONIC SQUARE(SPHERE_PROBE_ATLAS_RES / SPHERE_PROBE_REMAP_GROUP_SIZE)
