@@ -74,7 +74,7 @@ void WebGPUVertexBuffer::ensure_buffer()
   desc.size = buffer_size_;
   desc.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst | WGPUBufferUsage_Storage |
                WGPUBufferUsage_CopySrc;
-  buffer_ = wgpuDeviceCreateBuffer(ctx->device(), &desc);
+  buffer_ = data_ ? wgpu_buffer_acquire(ctx->device(), &desc) : wgpuDeviceCreateBuffer(ctx->device(), &desc);
   if (old_buffer) {
     /* Growth while bound as SSBO/texbuf: point the bind tables at the new buffer, then destroy the
      * old one after the next submit (M2). */
@@ -97,7 +97,7 @@ bool WebGPUVertexBuffer::cow_if_pass_open(WebGPUContext *ctx)
   desc.size = buffer_size_;
   desc.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst | WGPUBufferUsage_Storage |
                WGPUBufferUsage_CopySrc;
-  WGPUBuffer fresh = wgpuDeviceCreateBuffer(ctx->device(), &desc);
+  WGPUBuffer fresh = wgpu_buffer_acquire(ctx->device(), &desc);
   if (fresh == nullptr) {
     return false;
   }

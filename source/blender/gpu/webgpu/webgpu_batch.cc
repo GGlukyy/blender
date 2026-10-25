@@ -736,7 +736,7 @@ void WebGPUBatch::record_draw(int vertex_first,
           bd.label = {"point_expand_vbo", WGPU_STRLEN};
           bd.size = (dst.size() + 3) & ~size_t(3);
           bd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
-          pe.bufs[i] = wgpuDeviceCreateBuffer(ctx->device(), &bd);
+          pe.bufs[i] = wgpu_buffer_acquire(ctx->device(), &bd);
           if (pe.bufs[i]) {
             dst.resize(bd.size);
             wgpu_counted_write(ctx->queue(), pe.bufs[i], 0, dst.data(), dst.size());

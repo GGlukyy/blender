@@ -42,7 +42,7 @@ void WebGPUIndexBuf::ensure_buffer()
   desc.size = buffer_size_;
   desc.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst | WGPUBufferUsage_Storage |
                WGPUBufferUsage_CopySrc;
-  buffer_ = wgpuDeviceCreateBuffer(ctx->device(), &desc);
+  buffer_ = wgpu_buffer_acquire(ctx->device(), &desc);
 }
 
 void WebGPUIndexBuf::upload_data()

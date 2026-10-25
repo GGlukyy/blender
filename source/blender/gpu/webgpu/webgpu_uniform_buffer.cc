@@ -55,7 +55,7 @@ void WebGPUUniformBuf::ensure_buffer()
    * buffer may carry both Uniform and Storage usage. */
   desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
   desc.mappedAtCreation = false;
-  buffer_ = wgpuDeviceCreateBuffer(ctx->device(), &desc);
+  buffer_ = wgpu_buffer_acquire(ctx->device(), &desc);
   if (buffer_) {
     wgpu_counted_write(ctx->queue(), buffer_, 0, data_, alloc_size_);
   }
@@ -74,7 +74,7 @@ bool WebGPUUniformBuf::cow_if_pass_open(WebGPUContext *ctx)
   WGPUBufferDescriptor desc = {};
   desc.size = alloc_size_;
   desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
-  WGPUBuffer fresh = wgpuDeviceCreateBuffer(ctx->device(), &desc);
+  WGPUBuffer fresh = wgpu_buffer_acquire(ctx->device(), &desc);
   if (fresh == nullptr) {
     return false;
   }

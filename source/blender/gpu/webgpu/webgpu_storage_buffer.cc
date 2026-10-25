@@ -81,7 +81,7 @@ bool WebGPUStorageBuf::cow_if_pass_open(WebGPUContext *ctx)
   desc.size = alloc_size_;
   desc.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst |
                WGPUBufferUsage_Indirect | WGPUBufferUsage_Vertex;
-  WGPUBuffer fresh = wgpuDeviceCreateBuffer(ctx->device(), &desc);
+  WGPUBuffer fresh = wgpu_buffer_acquire(ctx->device(), &desc);
   if (fresh == nullptr) {
     return false;
   }

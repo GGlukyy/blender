@@ -36,6 +36,7 @@ void wgpu_note_compile();
  * Blender OWNS are queued here and destroy()ed right after the next queue submit (destroy before the
  * submit would invalidate commands still being recorded). Never use on AddRef'd (shared) handles. */
 void wgpu_buffer_free(WGPUBuffer b);
+WGPUBuffer wgpu_buffer_acquire(WGPUDevice dev, const WGPUBufferDescriptor *d); /* K3 pool */
 /* Same for textures that Blender owns (NOT texture views sharing a source via AddRef). */
 void wgpu_texture_free(WGPUTexture t);
 void wgpu_flush_buffer_frees();

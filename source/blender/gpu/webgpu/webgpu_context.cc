@@ -120,6 +120,51 @@ void wgpu_buffer_free(WGPUBuffer b)
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
   g_buf_free_list.push_back({b, ++g_free_seq}); /* Keeps the caller's reference until the flush. */
 }
+/* K3/H1-C: pool of whole-buffer-overwritten per-frame buffers keyed by (size, usage). Fast drags
+ * created ~1200 buffers/s; WebKit keeps the memory of destroyed buffers while a bind group
+ * references them. A buffer enters the pool only after every recording context submitted (same
+ * rule as destroy), so a queue write into a reused buffer is ordered after all earlier use.
+ * WGPU_NO_POOL=1 disables (debug). */
+struct PooledBuf {
+  WGPUBuffer b;
+  uint32_t epoch;
+};
+static std::unordered_map<uint64_t, std::vector<PooledBuf>> g_buf_pool;
+static uint64_t g_pool_bytes = 0;
+static uint32_t g_pool_count = 0;
+static uint32_t g_pool_epoch = 0;
+static bool wgpu_pool_enabled()
+{
+  static const bool on = getenv("WGPU_NO_POOL") == nullptr;
+  return on;
+}
+static bool wgpu_poolable(uint64_t u)
+{
+  const uint64_t V = WGPUBufferUsage_Vertex, I = WGPUBufferUsage_Index, U = WGPUBufferUsage_Uniform,
+                 S = WGPUBufferUsage_Storage, D = WGPUBufferUsage_CopyDst, C = WGPUBufferUsage_CopySrc,
+                 N = WGPUBufferUsage_Indirect;
+  return u == (U | S | D) || u == (S | C | D | N | V) || u == (V | D | S | C) || u == (I | D | S | C) ||
+         u == (V | S | D) || u == (V | D);
+}
+static inline uint64_t wgpu_pool_key(uint64_t size, uint64_t usage)
+{
+  return (size << 12) | (usage & 0xfff);
+}
+WGPUBuffer wgpu_buffer_acquire(WGPUDevice dev, const WGPUBufferDescriptor *d)
+{
+  if (wgpu_pool_enabled() && !d->mappedAtCreation && wgpu_poolable(d->usage)) {
+    std::lock_guard<std::mutex> lock(g_buf_free_mutex);
+    auto it = g_buf_pool.find(wgpu_pool_key(d->size, d->usage));
+    if (it != g_buf_pool.end() && !it->second.empty()) {
+      WGPUBuffer b = it->second.back().b;
+      it->second.pop_back();
+      g_pool_bytes -= d->size;
+      g_pool_count--;
+      return b;
+    }
+  }
+  return wgpuDeviceCreateBuffer(dev, d);
+}
 uint64_t wgpu_min_recording_seq();
 void wgpu_flush_buffer_frees()
 {
@@ -170,10 +215,42 @@ void wgpu_flush_buffer_frees()
     const bool is_ssbo = (usage & WGPUBufferUsage_Indirect) != 0;
     const bool is_vbo = (usage & WGPUBufferUsage_Vertex) && (usage & WGPUBufferUsage_CopySrc) && !is_ssbo;
     const bool keep_vbo = keep && ((is_vbo && strstr(keep, "vbo")) || (is_ssbo && strstr(keep, "ssbo")));
+    if (wgpu_pool_enabled() && wgpu_poolable(usage)) {
+      const uint64_t sz = wgpuBufferGetSize(b);
+      std::lock_guard<std::mutex> lock(g_buf_free_mutex);
+      auto &bucket = g_buf_pool[wgpu_pool_key(sz, usage)];
+      if (sz <= (4u << 20) && g_pool_bytes + sz <= (48u << 20) && bucket.size() < 256 && g_pool_count < 400) {
+        g_pool_count++;
+        bucket.push_back({b, g_pool_epoch});
+        g_pool_bytes += sz;
+        continue; /* Pool keeps the caller's reference. */
+      }
+    }
     if (!no_buf && !keep_vbo && (nu_mask == 0 || (usage & nu_mask) == 0)) {
       wgpuBufferDestroy(b);
     }
     wgpuBufferRelease(b);
+  }
+  /* Evict pooled buffers unused for ~1000 flushes (a few seconds). */
+  g_pool_epoch++;
+  if ((g_pool_epoch & 63) == 0) {
+    std::lock_guard<std::mutex> lock(g_buf_free_mutex);
+    for (auto &kv : g_buf_pool) {
+      auto &v = kv.second;
+      size_t keep_n = 0;
+      for (PooledBuf &pb : v) {
+        if (g_pool_epoch - pb.epoch > 1000) {
+          g_pool_bytes -= wgpuBufferGetSize(pb.b);
+          g_pool_count--;
+          wgpuBufferDestroy(pb.b);
+          wgpuBufferRelease(pb.b);
+        }
+        else {
+          v[keep_n++] = pb;
+        }
+      }
+      v.resize(keep_n);
+    }
   }
 }
 
