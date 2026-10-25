@@ -490,7 +490,7 @@ int main(int argc,
           };
           const gcb = gdev.createBuffer.bind(gdev), gct = gdev.createTexture.bind(gdev);
           /* IPAD_CRASH H1-A: creations per label/usage ("hist": count, hbytes: bytes). */
-          gst.hist = {}; gst.hbytes = {};
+          gst.hist = {}; gst.hbytes = {}; gst.thist = {};
           gdev.createBuffer = (d) => {
             const hk = (d.label || "") + "/" + d.usage.toString(16);
             gst.hist[hk] = (gst.hist[hk] || 0) + 1; gst.hbytes[hk] = (gst.hbytes[hk] || 0) + d.size;
@@ -499,6 +499,8 @@ int main(int argc,
           gdev.createTexture = (d) => {
             const sz = d.size, w = sz.width !== undefined ? sz.width : sz[0], h = (sz.height !== undefined ? sz.height : sz[1]) || 1,
                   l = (sz.depthOrArrayLayers !== undefined ? sz.depthOrArrayLayers : sz[2]) || 1;
+            const tk = (d.label || "") + "/" + d.format + "/" + w + "x" + h;
+            gst.thist[tk] = (gst.thist[tk] || 0) + 1;
             return gtrack("tex", gct(d), w * h * l * 4 * (d.mipLevelCount > 1 ? 1.34 : 1));
           };
           /* IPAD_CRASH H1-0: bind group / view creation counters and GPU queue lag (every 2 s). */

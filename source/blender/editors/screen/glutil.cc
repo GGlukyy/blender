@@ -65,8 +65,53 @@ void PixelBitmapDrawer::draw(const float x,
   if (use_mipmap) {
     usage |= GPU_TEXTURE_USAGE_SHADER_WRITE;
   }
-  gpu::Texture *tex = GPU_texture_create_2d(
-      "immDrawPixels", img_w, img_h, mip_len, gpu_format, usage, nullptr);
+  /* Small cache of non-mipmapped textures: a redraw loop (e.g. dragging) would otherwise create and
+   * free a texture per call. WebKit keeps freed GPU memory alive until the bind groups holding it are
+   * garbage collected, which kills iPad Safari (docs/IPAD_CRASH.md H3). */
+  struct CachedTex {
+    gpu::Texture *tex = nullptr;
+    int w = 0, h = 0;
+    gpu::TextureFormat format = gpu::TextureFormat::Invalid;
+    uint64_t used = 0;
+  };
+  static CachedTex cache[4];
+  static uint64_t cache_clock = 0;
+  gpu::Texture *tex = nullptr;
+  CachedTex *cached = nullptr;
+  if (!use_mipmap) {
+    for (CachedTex &c : cache) {
+      if (c.tex && c.w == img_w && c.h == img_h && c.format == gpu_format) {
+        cached = &c;
+        break;
+      }
+    }
+    if (cached == nullptr) {
+      cached = &cache[0];
+      for (CachedTex &c : cache) {
+        if (c.tex == nullptr) {
+          cached = &c;
+          break;
+        }
+        if (c.used < cached->used) {
+          cached = &c;
+        }
+      }
+      if (cached->tex) {
+        GPU_texture_free(cached->tex);
+        cached->tex = nullptr;
+      }
+      cached->tex = GPU_texture_create_2d(
+          "immDrawPixels", img_w, img_h, mip_len, gpu_format, usage, nullptr);
+      cached->w = img_w;
+      cached->h = img_h;
+      cached->format = gpu_format;
+    }
+    cached->used = ++cache_clock;
+    tex = cached->tex;
+  }
+  else {
+    tex = GPU_texture_create_2d("immDrawPixels", img_w, img_h, mip_len, gpu_format, usage, nullptr);
+  }
   if (tex == nullptr) {
     return;
   }
@@ -115,7 +160,9 @@ void PixelBitmapDrawer::draw(const float x,
   }
 
   GPU_texture_unbind(tex);
-  GPU_texture_free(tex);
+  if (cached == nullptr) {
+    GPU_texture_free(tex);
+  }
 }
 
 void ED_draw_imbuf(const ImBuf *ibuf,
