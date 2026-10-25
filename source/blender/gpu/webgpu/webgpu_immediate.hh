@@ -24,8 +24,13 @@ namespace blender::gpu {
 class WebGPUImmediate : public Immediate {
  private:
   std::vector<uchar> data_;
+  /* Persistent ring (H1-A): one buffer reused by every immBegin/End so no buffer is created and
+   * destroyed per call (WebKit keeps destroyed memory alive while a bind group references it). */
+  WGPUBuffer ring_ = nullptr;
+  uint64_t ring_cap_ = 0, ring_off_ = 0;
 
  public:
+  ~WebGPUImmediate() override;
   uchar *begin() override;
   void end() override;
 };

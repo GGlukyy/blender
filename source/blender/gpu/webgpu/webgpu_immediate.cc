@@ -6,6 +6,8 @@
  * \ingroup gpu
  */
 
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 #include "GPU_matrix.hh"
@@ -72,38 +74,95 @@ void WebGPUImmediate::end()
   const size_t used = size_t(vertex_idx) * vertex_format.stride;
   const size_t buf_size = (used + 3) & ~size_t(3);
 
-  /* No flush needed: the buffer is FRESH, so the queued write cannot
-   * retroactively affect any already-recorded draw (they reference their own
-   * buffers). A flush here = one full submit per immBegin/End = pathological. */
-  WGPUBufferDescriptor bd = {};
-  bd.label = {"immediate", WGPU_STRLEN};
-  bd.size = buf_size;
-  bd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+  /* Ring buffer (H1-A). Offsets only grow while this context has recorded-but-unsubmitted
+   * commands (they may still read earlier ring contents); once nothing is pending the cursor
+   * rewinds, and queue writes are ordered after the earlier submits. */
+  static const bool use_ring = [] {
+    const char *e = getenv("WGPU_IMM_RING");
+    return e == nullptr || e[0] != '0';
+  }();
+  WGPUBuffer buf = nullptr;
+  uint64_t off = 0;
+  if (use_ring) {
+    if (!ctx->pass_open()) {
+      ring_off_ = 0;
+    }
+    constexpr uint64_t max_ring = 32ull << 20;
+    off = (ring_off_ + 255) & ~uint64_t(255);
+    if (ring_ != nullptr && off + buf_size > ring_cap_ && ring_cap_ >= max_ring) {
+      /* Full at the cap: submit pending work, then reuse from the start (no allocation). */
+      ctx->submit();
+      ring_off_ = 0;
+      off = 0;
+    }
+    if (ring_ == nullptr || off + buf_size > ring_cap_) {
+      uint64_t cap = std::max<uint64_t>({ring_cap_ * 2, uint64_t(buf_size), 1ull << 20});
+      cap = (cap + 255) & ~uint64_t(255);
+      WGPUBufferDescriptor rd = {};
+      rd.label = {"imm_ring", WGPU_STRLEN};
+      rd.size = cap;
+      rd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+      WGPUBuffer nb = wgpuDeviceCreateBuffer(ctx->device(), &rd);
+      if (nb == nullptr) {
+        return;
+      }
+      if (ring_ != nullptr) {
+        /* Recorded commands hold their own reference; destroy is sequenced after them. */
+        wgpu_scrub_buffer_all_contexts(ring_);
+        wgpu_buffer_free(ring_);
+      }
+      ring_ = nb;
+      ring_cap_ = cap;
+      off = 0;
+    }
+    buf = ring_;
+    wgpu_counted_write(ctx->queue(), buf, off, data_.data(), buf_size);
+    ring_off_ = off + buf_size;
+  }
+  else {
+    /* Legacy path: fresh buffer per call. */
+    WGPUBufferDescriptor bd = {};
+    bd.label = {"immediate", WGPU_STRLEN};
+    bd.size = buf_size;
+    bd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+    buf = wgpuDeviceCreateBuffer(ctx->device(), &bd);
+    if (buf == nullptr) {
+      return;
+    }
+    wgpu_counted_write(ctx->queue(), buf, 0, data_.data(), buf_size);
+  }
   g_stat_imm_buffers++;
   g_stat_imm_bytes += buf_size;
-  WGPUBuffer buf = wgpuDeviceCreateBuffer(ctx->device(), &bd);
-  if (buf == nullptr) {
-    return;
-  }
-  wgpu_counted_write(ctx->queue(), buf, 0, data_.data(), buf_size);
 
   if (shader->is_polyline) {
     /* Polyline shaders read positions/colors from SSBOs and expand to triangles
-     * (the wide-line workaround). Bind the vertex data at the polyline slots. */
+     * (the wide-line workaround). Bind the whole ring at the polyline slots; the shader finds
+     * its data through the offset passed to polyline_draw_workaround (as Metal does). */
     ctx->bind_ssbo(GPU_SSBO_POLYLINE_POS_BUF_SLOT, buf);
     ctx->bind_ssbo(GPU_SSBO_POLYLINE_COL_BUF_SLOT, buf);
     ctx->bind_ssbo(GPU_SSBO_INDEX_BUF_SLOT, buf);
-    this->polyline_draw_workaround(0);
+    this->polyline_draw_workaround(off);
+    ctx->unbind_ssbo(GPU_SSBO_POLYLINE_POS_BUF_SLOT);
+    ctx->unbind_ssbo(GPU_SSBO_POLYLINE_COL_BUF_SLOT);
+    ctx->unbind_ssbo(GPU_SSBO_INDEX_BUF_SLOT);
   }
   else {
     GPU_matrix_bind(ctx->shader);
-    webgpu_immediate_draw(prim_type, vertex_format, buf, vertex_idx);
+    webgpu_immediate_draw(prim_type, vertex_format, buf, vertex_idx, off, buf_size);
   }
 
-  /* The recorded commands (and bind groups) hold their own references. The polyline path left the
-   * buffer in the SSBO bind table: drop it before the buffer is destroyed (M2). */
-  ctx->scrub_buffer(buf);
-  wgpu_buffer_free(buf);
+  if (!use_ring) {
+    ctx->scrub_buffer(buf);
+    wgpu_buffer_free(buf);
+  }
+}
+
+WebGPUImmediate::~WebGPUImmediate()
+{
+  if (ring_ != nullptr) {
+    wgpu_scrub_buffer_all_contexts(ring_);
+    wgpu_buffer_free(ring_);
+  }
 }
 
 }  // namespace blender::gpu

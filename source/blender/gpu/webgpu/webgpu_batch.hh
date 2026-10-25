@@ -25,7 +25,9 @@ namespace blender::gpu {
 void webgpu_immediate_draw(GPUPrimType prim_type,
                            const GPUVertFormat &format,
                            WGPUBuffer vbo,
-                           uint vertex_count);
+                           uint vertex_count,
+                           uint64_t vbo_offset = 0,
+                           uint64_t vbo_size = WGPU_WHOLE_SIZE);
 
 class WebGPUBatch : public Batch {
  public:

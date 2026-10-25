@@ -459,7 +459,7 @@ int main(int argc,
            * which Safari does much later than Chrome). */
           const gmem = new BroadcastChannel("blender-gpumem");
           const gst = {buf: 0, buf_mb: 0, tex: 0, tex_mb: 0, buf_new: 0, buf_destroyed: 0, buf_gc: 0,
-                       tex_new: 0, tex_destroyed: 0, tex_gc: 0};
+                       tex_new: 0, tex_destroyed: 0, tex_gc: 0, bg_new: 0, view_new: 0, lag_ms: 0, lag_max: 0};
           let glast = 0, gbytes = {buf: 0, tex: 0};
           const gpost = (force, extra) => {
             const n = performance.now();
@@ -489,12 +489,33 @@ int main(int argc,
             };
           };
           const gcb = gdev.createBuffer.bind(gdev), gct = gdev.createTexture.bind(gdev);
-          gdev.createBuffer = (d) => gtrack("buf", gcb(d), d.size);
+          /* IPAD_CRASH H1-A: creations per label/usage ("hist": count, hbytes: bytes). */
+          gst.hist = {}; gst.hbytes = {};
+          gdev.createBuffer = (d) => {
+            const hk = (d.label || "") + "/" + d.usage.toString(16);
+            gst.hist[hk] = (gst.hist[hk] || 0) + 1; gst.hbytes[hk] = (gst.hbytes[hk] || 0) + d.size;
+            return gtrack("buf", gcb(d), d.size);
+          };
           gdev.createTexture = (d) => {
             const sz = d.size, w = sz.width !== undefined ? sz.width : sz[0], h = (sz.height !== undefined ? sz.height : sz[1]) || 1,
                   l = (sz.depthOrArrayLayers !== undefined ? sz.depthOrArrayLayers : sz[2]) || 1;
             return gtrack("tex", gct(d), w * h * l * 4 * (d.mipLevelCount > 1 ? 1.34 : 1));
           };
+          /* IPAD_CRASH H1-0: bind group / view creation counters and GPU queue lag (every 2 s). */
+          const gcbg = gdev.createBindGroup.bind(gdev);
+          gdev.createBindGroup = (d) => { gst.bg_new++; return gcbg(d); };
+          if (typeof GPUTexture !== "undefined") {
+            const gcv = GPUTexture.prototype.createView;
+            GPUTexture.prototype.createView = function () { gst.view_new++; return gcv.apply(this, arguments); };
+          }
+          setInterval(() => {
+            const t = performance.now();
+            gdev.queue.onSubmittedWorkDone().then(() => {
+              gst.lag_ms = Math.round(performance.now() - t);
+              if (gst.lag_ms > gst.lag_max) gst.lag_max = gst.lag_ms;
+              gpost(false);
+            });
+          }, 2000);
           if ($3) {
             /* WGPU_DESTROYLOG=1 (debug): report every bind group / vertex / index buffer use of a
              * buffer that was already destroy()ed (it would invalidate the whole submit). */

@@ -1410,7 +1410,9 @@ void WebGPUBatch::record_draw(int vertex_first,
 void webgpu_immediate_draw(GPUPrimType prim_type,
                            const GPUVertFormat &format,
                            WGPUBuffer vbo,
-                           uint vertex_count)
+                           uint vertex_count,
+                           uint64_t vbo_offset,
+                           uint64_t vbo_size)
 {
   WebGPUContext *ctx = WebGPUContext::get();
   if (ctx == nullptr || ctx->device() == nullptr || vbo == nullptr || vertex_count == 0) {
@@ -1691,7 +1693,7 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
   }
   uint32_t vb_slot = 0;
   if (!attrs.empty()) {
-    wgpuRenderPassEncoderSetVertexBuffer(pass, vb_slot++, vbo, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetVertexBuffer(pass, vb_slot++, vbo, vbo_offset, vbo_size);
   }
   if (!pad_attrs.empty() && vb_slot < layout_count) {
     wgpuRenderPassEncoderSetVertexBuffer(
