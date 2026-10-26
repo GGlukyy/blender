@@ -620,6 +620,78 @@ static void wgsl_cache_store(const char *stage, const std::string &glsl, const s
 }
 #endif /* __EMSCRIPTEN__ */
 
+/* Safari/WebKit bug 275010: a module-scope `override NAME : T = EXPR;` WITHOUT @id (value
+ * computed from other overrides; Tint emits it for `if (spec_const)`) can make the pipeline
+ * invalid. Inline EXPR into the uses instead (same meaning; overrides are allowed in function
+ * bodies). Mirrors inlineComputedOverrides() in demo/src/main.js. */
+static void wgsl_inline_computed_overrides(std::string &wgsl)
+{
+  struct Ov {
+    size_t begin, end;
+    std::string name, expr;
+  };
+  std::vector<Ov> found;
+  size_t pos = 0;
+  const std::string kw = "override ";
+  while (pos < wgsl.size()) {
+    size_t eol = wgsl.find('\n', pos);
+    if (eol == std::string::npos) {
+      eol = wgsl.size();
+    }
+    if (wgsl.compare(pos, kw.size(), kw) == 0) {
+      /* Previous line must not be a lone `@id(N)` attribute. */
+      bool has_id = false;
+      if (pos > 0) {
+        size_t pstart = wgsl.rfind('\n', pos >= 2 ? pos - 2 : 0);
+        pstart = (pstart == std::string::npos || pos < 2) ? 0 : pstart + 1;
+        const std::string prev = wgsl.substr(pstart, pos - 1 - pstart);
+        has_id = prev.find("@id(") != std::string::npos && prev.find("override") == std::string::npos;
+      }
+      const size_t colon = wgsl.find(':', pos);
+      const size_t eq = wgsl.find('=', pos);
+      const size_t semi = wgsl.find(';', pos);
+      if (!has_id && colon < eol && eq < eol && semi < eol && colon < eq && eq < semi) {
+        auto trim = [](std::string v) {
+          const size_t a = v.find_first_not_of(" \t");
+          const size_t b = v.find_last_not_of(" \t");
+          return a == std::string::npos ? std::string() : v.substr(a, b - a + 1);
+        };
+        found.push_back({pos,
+                         std::min(eol + 1, wgsl.size()),
+                         trim(wgsl.substr(pos + kw.size(), colon - pos - kw.size())),
+                         trim(wgsl.substr(eq + 1, semi - eq - 1))});
+      }
+    }
+    pos = eol + 1;
+  }
+  auto is_word = [](char c) { return isalnum(uint8_t(c)) || c == '_'; };
+  for (const Ov &ov : found) {
+    /* Re-locate the declaration line (earlier edits shift offsets). */
+    const std::string decl_start = "override " + ov.name + " ";
+    size_t at = wgsl.find(decl_start);
+    if (at == std::string::npos) {
+      continue;
+    }
+    size_t line_end = wgsl.find('\n', at);
+    line_end = (line_end == std::string::npos) ? wgsl.size() : line_end + 1;
+    wgsl.erase(at, line_end - at);
+    const std::string repl = "(" + ov.expr + ")";
+    size_t i = 0;
+    while ((i = wgsl.find(ov.name, i)) != std::string::npos) {
+      const size_t e = i + ov.name.size();
+      const bool left_ok = i == 0 || (!is_word(wgsl[i - 1]) && wgsl[i - 1] != '.');
+      const bool right_ok = e >= wgsl.size() || !is_word(wgsl[e]);
+      if (left_ok && right_ok) {
+        wgsl.replace(i, ov.name.size(), repl);
+        i += repl.size();
+      }
+      else {
+        i = e;
+      }
+    }
+  }
+}
+
 static bool glsl_to_wgsl(const std::string &glsl,
                          shaderc_shader_kind kind,
                          const char *name,
@@ -714,6 +786,7 @@ static bool glsl_to_wgsl(const std::string &glsl,
     return false;
   }
   r_wgsl = out.Get().wgsl;
+  wgsl_inline_computed_overrides(r_wgsl);
   if (getenv("WGPU_DUMP_WGSL")) {
     char path[256];
     snprintf(path, sizeof(path), "/tmp/wgpu_wgsl_%s_%d.wgsl", name, int(kind));
