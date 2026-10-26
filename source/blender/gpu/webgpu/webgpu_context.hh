@@ -55,6 +55,13 @@ inline void wgpu_counted_write(WGPUQueue q, WGPUBuffer b, uint64_t off, const vo
 
 namespace blender::gpu {
 
+/* Dynamic offsets for the push-constant UBO binding (H1-B). The bind group (and its cache key) carries
+ * offset 0; every draw/dispatch MUST pass these to SetBindGroup, or all draws read the first slice. */
+struct BindDynOffsets {
+  uint32_t v[4] = {};
+  uint32_t n = 0;
+};
+
 /** ?perf=1 telemetry: wall time spent in WebGPU API recording/submission per frame (outermost
  * scope only, so nested timers are not double counted). Reset per frame in present_backbuffer. */
 extern double g_stat_api_ms;
@@ -375,7 +382,8 @@ class WebGPUContext : public Context {
    * if a required resource is unbound (the draw is then skipped). */
   WGPUBindGroup build_bind_group(WebGPUShader *shader,
                                  const std::vector<WgslResourceBinding> &bindings,
-                                 WGPUBindGroupLayout bgl);
+                                 WGPUBindGroupLayout bgl,
+                                 BindDynOffsets *r_dyn = nullptr);
 
   /* A cached default linear/repeat sampler used for all sampler bindings until
    * per-binding sampler state is wired. */

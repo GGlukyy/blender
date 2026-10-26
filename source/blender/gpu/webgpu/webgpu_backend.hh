@@ -262,7 +262,8 @@ class WebGPUBackend : public GPUBackend {
     ctx->render_pass_end();
     WGPUBindGroupLayout bgl = wgpuComputePipelineGetBindGroupLayout(pipe, 0);
     step("build_bind_group");
-    WGPUBindGroup bg = ctx->build_bind_group(sh, sh->compute_bindings(), bgl);
+    BindDynOffsets dyn;
+    WGPUBindGroup bg = ctx->build_bind_group(sh, sh->compute_bindings(), bgl, &dyn);
     step("bind_group_built");
     WGPUCommandEncoder enc = ctx->ensure_encoder();
     if (enc == nullptr) {
@@ -286,7 +287,7 @@ class WebGPUBackend : public GPUBackend {
      * whole command buffer at submit (dropping all sibling passes) — skip it. */
     if (bg) {
       wgpuComputePassEncoderSetPipeline(cpass, pipe);
-      wgpuComputePassEncoderSetBindGroup(cpass, 0, bg, 0, nullptr);
+      wgpuComputePassEncoderSetBindGroup(cpass, 0, bg, dyn.n, dyn.n ? dyn.v : nullptr);
       wgpuComputePassEncoderDispatchWorkgroups(
           cpass, uint32_t(groups_x_len), uint32_t(groups_y_len), uint32_t(groups_z_len));
     }
@@ -634,7 +635,8 @@ class WebGPUBackend : public GPUBackend {
     }
     ctx->render_pass_end();
     WGPUBindGroupLayout bgl = wgpuComputePipelineGetBindGroupLayout(pipe, 0);
-    WGPUBindGroup bg = ctx->build_bind_group(sh, sh->compute_bindings(), bgl);
+    BindDynOffsets dyn;
+    WGPUBindGroup bg = ctx->build_bind_group(sh, sh->compute_bindings(), bgl, &dyn);
     WGPUCommandEncoder enc = ctx->ensure_encoder();
     if (enc == nullptr) {
       wgpuBindGroupLayoutRelease(bgl);
@@ -643,7 +645,7 @@ class WebGPUBackend : public GPUBackend {
     WGPUComputePassEncoder cpass = wgpuCommandEncoderBeginComputePass(enc, nullptr);
     if (bg) {
       wgpuComputePassEncoderSetPipeline(cpass, pipe);
-      wgpuComputePassEncoderSetBindGroup(cpass, 0, bg, 0, nullptr);
+      wgpuComputePassEncoderSetBindGroup(cpass, 0, bg, dyn.n, dyn.n ? dyn.v : nullptr);
       wgpuComputePassEncoderDispatchWorkgroupsIndirect(cpass, ind, 0);
     }
     wgpuComputePassEncoderEnd(cpass);

@@ -14,6 +14,7 @@
 #include <malloc.h>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "BLI_math_half.hh"
 #include <string>
@@ -1926,6 +1927,12 @@ WebGPUTexture *WebGPUContext::bound_texture_for_binding(
   return nullptr;
 }
 
+static bool wgpu_pc_dyn_enabled()
+{
+  static const bool on = getenv("WGPU_PC_DYN_OFF") == nullptr;
+  return on;
+}
+
 WGPUBindGroupLayout WebGPUContext::make_bind_group_layout(
     const std::vector<WgslResourceBinding> &bindings, bool is_compute, ShaderInterface *iface)
 {
@@ -1954,13 +1961,14 @@ WGPUBindGroupLayout WebGPUContext::make_bind_group_layout(
     e.visibility = (b.writable && !is_compute) ? WGPUShaderStage_Fragment : vis;
     switch (b.kind) {
       case WgslResourceBinding::UBO:
-      case WgslResourceBinding::PUSH_CONST:
-        /* NOTE: push constants deliberately do NOT use hasDynamicOffset: reusing
-         * one cached bind group with per-draw dynamic offsets left every draw in
-         * a pass reading the FIRST offset (all icons identical, flicker on arena
-         * rollover). The slice offset is baked into the bind group instead and
-         * the cache key includes it — unchanged uniforms still hit the cache. */
         e.buffer.type = WGPUBufferBindingType_Uniform;
+        break;
+      case WgslResourceBinding::PUSH_CONST:
+        /* H1-B: dynamic offset (per-draw slice offset passed to SetBindGroup, NOT part of the cache
+         * key). The old NOTE (every draw read the FIRST offset) was caused by baking/keying; every
+         * SetBindGroup site must pass BindDynOffsets. WGPU_PC_DYN_OFF=1 restores baked offsets. */
+        e.buffer.type = WGPUBufferBindingType_Uniform;
+        e.buffer.hasDynamicOffset = wgpu_pc_dyn_enabled();
         break;
       case WgslResourceBinding::SSBO:
         e.buffer.type = b.buffer_type;
@@ -2044,8 +2052,12 @@ WebGPUTexture *WebGPUContext::bound_storage_image(WebGPUShader *shader, const ch
 
 WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
                                               const std::vector<WgslResourceBinding> &bindings,
-                                              WGPUBindGroupLayout bgl)
+                                              WGPUBindGroupLayout bgl,
+                                              BindDynOffsets *r_dyn)
 {
+  if (r_dyn) {
+    r_dyn->n = 0;
+  }
   if (device_ == nullptr || shader == nullptr || shader->interface == nullptr) {
     return nullptr;
   }
@@ -2068,7 +2080,16 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
         uint64_t off = 0, size = 0;
         if (shader->push_const_slice(buf, off, size)) {
           e.buffer = buf;
-          e.offset = off;
+          if (wgpu_pc_dyn_enabled()) {
+            /* Dynamic offset: the cached group is offset-independent (H1-B). */
+            e.offset = 0;
+            if (r_dyn && r_dyn->n < 4) {
+              r_dyn->v[r_dyn->n++] = uint32_t(off);
+            }
+          }
+          else {
+            e.offset = off;
+          }
           e.size = size;
         }
         break;
@@ -2372,6 +2393,60 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
     return it->second.bg;
   }
 
+  {
+    /* TEMP H1-B diagnosis (ENV.WGPU_BG_WHY=1): why did the cache miss? */
+    static const bool why = getenv("WGPU_BG_WHY") != nullptr;
+    if (why) {
+      static std::unordered_set<uint64_t> seen_full, seen_nooff, seen_nohandle;
+      static int c_evicted = 0, c_pc = 0, c_handle = 0, c_new = 0;
+      static double last_print = 0.0;
+      uint64_t k_off = 1469598103934665603ull, k_h = 1469598103934665603ull;
+      auto mix = [](uint64_t &k, const void *p, size_t n) {
+        const uint8_t *b = static_cast<const uint8_t *>(p);
+        for (size_t i = 0; i < n; i++) {
+          k = (k ^ b[i]) * 1099511628211ull;
+        }
+      };
+      const void *shp = shader;
+      mix(k_off, &shp, sizeof(shp));
+      mix(k_h, &shp, sizeof(shp));
+      for (size_t i = 0; i < entries.size(); i++) {
+        const WGPUBindGroupEntry &e = entries[i];
+        const bool pc = i < bindings.size() && bindings[i].kind == WgslResourceBinding::PUSH_CONST;
+        mix(k_off, &e.binding, sizeof(e.binding));
+        mix(k_off, &e.buffer, sizeof(e.buffer));
+        if (!pc) {
+          mix(k_off, &e.offset, sizeof(e.offset));
+        }
+        mix(k_off, &e.textureView, sizeof(e.textureView));
+        mix(k_off, &e.sampler, sizeof(e.sampler));
+        mix(k_h, &e.binding, sizeof(e.binding));
+        mix(k_h, &e.textureView, sizeof(e.textureView));
+        mix(k_h, &e.sampler, sizeof(e.sampler));
+      }
+      if (seen_full.count(key)) {
+        c_evicted++;
+      }
+      else if (seen_nooff.count(k_off)) {
+        c_pc++;
+      }
+      else if (seen_nohandle.count(k_h)) {
+        c_handle++;
+      }
+      else {
+        c_new++;
+      }
+      seen_full.insert(key);
+      seen_nooff.insert(k_off);
+      seen_nohandle.insert(k_h);
+      const double now = emscripten_get_now();
+      if (now - last_print > 2000.0) {
+        last_print = now;
+        fprintf(stderr, "WGPU_BGWHY evicted=%d pc_offset=%d handle=%d new=%d\n", c_evicted, c_pc, c_handle, c_new);
+        c_evicted = c_pc = c_handle = c_new = 0;
+      }
+    }
+  }
   WGPUBindGroupDescriptor desc = {};
   desc.layout = bgl;
   desc.entryCount = entries.size();

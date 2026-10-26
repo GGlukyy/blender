@@ -995,7 +995,8 @@ void WebGPUBatch::record_draw(int vertex_first,
      triggers lazy buffer uploads (push constants, dirty UBOs) whose GL-ordering
      guard flushes any open pass (see flush_if_pass_open). */
   WGPUBindGroupLayout bgl = wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
-  WGPUBindGroup bg = ctx->build_bind_group(shader, shader->render_bindings(), bgl);
+  BindDynOffsets dyn;
+  WGPUBindGroup bg = ctx->build_bind_group(shader, shader->render_bindings(), bgl, &dyn);
 
   WGPUBuffer ibuf = nullptr;
   if (elem_() != nullptr) {
@@ -1200,7 +1201,7 @@ void WebGPUBatch::record_draw(int vertex_first,
   ctx->occlusion_query_draw_hook();
   wgpuRenderPassEncoderSetPipeline(pass, pipeline);
   if (bg) {
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, dyn.n, dyn.n ? dyn.v : nullptr);
   }
   /* A VBO may have been re-uploaded (copy-on-write replaces its WGPUBuffer and releases the old
    * handle) between capturing vb_buffers above and now (bind-group build, pass start, pending
@@ -1663,7 +1664,8 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
 
   /* Bind group BEFORE opening the pass (lazy uploads must not land mid-pass). */
   WGPUBindGroupLayout bgl = wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
-  WGPUBindGroup bg = ctx->build_bind_group(shader, shader->render_bindings(), bgl);
+  BindDynOffsets dyn;
+  WGPUBindGroup bg = ctx->build_bind_group(shader, shader->render_bindings(), bgl, &dyn);
   if (bg == nullptr && !shader->render_bindings().empty()) {
     wgpuBindGroupLayoutRelease(bgl);
     return;
@@ -1689,7 +1691,7 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
   ctx->occlusion_query_draw_hook();
   wgpuRenderPassEncoderSetPipeline(pass, pipeline);
   if (bg) {
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, dyn.n, dyn.n ? dyn.v : nullptr);
   }
   uint32_t vb_slot = 0;
   if (!attrs.empty()) {
