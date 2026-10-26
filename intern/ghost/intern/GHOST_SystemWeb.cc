@@ -198,6 +198,20 @@ static GHOST_TKey web_key_from_code(const char *code)
 
 /* --- System ------------------------------------------------------------------ */
 
+/* Backing-store scale (page `?dpr=1.5|2`, default 1): window size, mouse coordinates and the native
+ * pixel size are in device pixels = CSS px * dpr, so the UI keeps its size but renders sharper. */
+static double web_dpr()
+{
+  static double v = 0.0;
+  if (v == 0.0) {
+    v = MAIN_THREAD_EM_ASM_DOUBLE({ return window.__DPR__ || 1; });
+    if (!(v >= 1.0 && v <= 3.0)) {
+      v = 1.0;
+    }
+  }
+  return v;
+}
+
 GHOST_SystemWeb::GHOST_SystemWeb() : GHOST_System() {}
 
 GHOST_TSuccess GHOST_SystemWeb::init()
@@ -210,8 +224,8 @@ GHOST_TSuccess GHOST_SystemWeb::init()
   /* Canvas size: authoritative from the page (set once by the harness). */
   double w = 0, h = 0;
   if (emscripten_get_element_css_size(WEB_CANVAS, &w, &h) == EMSCRIPTEN_RESULT_SUCCESS && w > 0) {
-    canvas_w_ = uint32_t(w);
-    canvas_h_ = uint32_t(h);
+    canvas_w_ = uint32_t(w * web_dpr() + 0.5);
+    canvas_h_ = uint32_t(h * web_dpr() + 0.5);
   }
 
   /* Input callbacks, delivered on this (the Blender main) thread whenever it
@@ -261,6 +275,7 @@ GHOST_IWindow *GHOST_SystemWeb::createWindow(const char *title,
   }
   const GHOST_ContextParams context_params = GHOST_CONTEXT_PARAMS_FROM_GPU_SETTINGS(gpu_settings);
   window_ = new GHOST_WindowWeb(title, canvas_w_, canvas_h_, state, context_params);
+  window_->set_native_pixel_size(float(web_dpr()));
   /* Register with the window manager so validWindow() passes — otherwise every
    * GHOST event is dropped as "invalid window" in wm_window's event handler. */
   window_manager_->addWindow(window_);
@@ -278,8 +293,8 @@ bool GHOST_SystemWeb::handleMouse(int event_type, const EmscriptenMouseEvent *e)
     return false;
   }
   const uint64_t t = getMilliSeconds();
-  cursor_x_ = int32_t(e->targetX);
-  cursor_y_ = int32_t(e->targetY);
+  cursor_x_ = int32_t(e->targetX * web_dpr());
+  cursor_y_ = int32_t(e->targetY * web_dpr());
 
   modifiers_.set(GHOST_kModifierKeyLeftShift, e->shiftKey);
   modifiers_.set(GHOST_kModifierKeyLeftControl, e->ctrlKey);
@@ -391,8 +406,8 @@ bool GHOST_SystemWeb::handleResize()
   if (emscripten_get_element_css_size(WEB_CANVAS, &w, &h) != EMSCRIPTEN_RESULT_SUCCESS || w <= 0) {
     return false;
   }
-  canvas_w_ = uint32_t(w);
-  canvas_h_ = uint32_t(h);
+  canvas_w_ = uint32_t(w * web_dpr() + 0.5);
+  canvas_h_ = uint32_t(h * web_dpr() + 0.5);
   if (window_) {
     window_->resize(canvas_w_, canvas_h_);
     pushEvent(std::unique_ptr<const GHOST_IEvent>(new GHOST_Event(getMilliSeconds(), GHOST_kEventWindowSize, window_)));

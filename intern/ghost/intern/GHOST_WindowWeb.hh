@@ -37,6 +37,11 @@ class GHOST_WindowWeb : public GHOST_Window {
   }
   ~GHOST_WindowWeb() override = default;
 
+  void set_native_pixel_size(float s)
+  {
+    native_pixel_size_ = s;
+  }
+
   void resize(uint32_t width, uint32_t height)
   {
     width_ = width;
