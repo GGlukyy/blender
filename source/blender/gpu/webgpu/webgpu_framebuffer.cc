@@ -445,7 +445,10 @@ void WebGPUFrameBuffer::blit_to(GPUFrameBufferBits planes,
   if (ctx == nullptr || ctx->device() == nullptr || dst_fb == nullptr) {
     return;
   }
-  auto copy_one = [&](gpu::Texture *src_t, gpu::Texture *dst_t, WGPUTextureAspect aspect) {
+  auto copy_one = [&](gpu::Texture *src_t,
+                      gpu::Texture *dst_t,
+                      WGPUTextureAspect aspect,
+                      bool is_depth) {
     if (src_t == nullptr || dst_t == nullptr) {
       return;
     }
@@ -470,6 +473,22 @@ void WebGPUFrameBuffer::blit_to(GPUFrameBufferBits planes,
     if (w <= 0 || h <= 0 || dst_offset_x < 0 || dst_offset_y < 0) {
       return;
     }
+    /* WebGPU: a depth/stencil copy must cover the WHOLE subresource of both textures. A partial
+     * one is a validation error that Safari uses to drop the entire command buffer. */
+    if (is_depth && (w != s->width_get() || w != d->width_get() || h != s->height_get() ||
+                     h != d->height_get() || dst_offset_x != 0 || dst_offset_y != 0))
+    {
+      static int s_logged_d = 0;
+      if (s_logged_d < 8) {
+        s_logged_d++;
+        fprintf(stderr,
+                "WGPU_FB blit_to depth copy skipped (partial): src %dx%d dst %dx%d copy %dx%d off %d,%d\n",
+                s->width_get(), s->height_get(), d->width_get(), d->height_get(), w, h,
+                dst_offset_x, dst_offset_y);
+        fflush(stderr);
+      }
+      return;
+    }
     /* Consume pending clears on BOTH sides first (they are loadOps applied at
      * pass begin; a copy would otherwise read/write pre-clear content). */
     execute_pending_clears();
@@ -490,10 +509,10 @@ void WebGPUFrameBuffer::blit_to(GPUFrameBufferBits planes,
     wgpuCommandEncoderCopyTextureToTexture(enc, &src_i, &dst_i, &ext);
   };
   if (planes & GPU_COLOR_BIT) {
-    copy_one(color_tex(src_slot), dst_fb->color_tex(dst_slot), WGPUTextureAspect_All);
+    copy_one(color_tex(src_slot), dst_fb->color_tex(dst_slot), WGPUTextureAspect_All, false);
   }
   if (planes & GPU_DEPTH_BIT) {
-    copy_one(depth_tex(), dst_fb->depth_tex(), WGPUTextureAspect_All);
+    copy_one(depth_tex(), dst_fb->depth_tex(), WGPUTextureAspect_All, true);
   }
 }
 

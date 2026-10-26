@@ -857,6 +857,19 @@ void WebGPUTexture::copy_to(Texture *dst_tex, IndexRange mip_levels)
     dst_info.origin = {0, 0, uint32_t(dst->view_layer_)};
     const uint32_t mw = std::max(w_ >> mip, 1);
     const uint32_t mh = std::max(h_ >> mip, 1);
+    /* Invalid copies (extent beyond dst, or partial depth/stencil copy) would make Safari drop the
+     * whole command buffer; skip with a log instead. */
+    const uint32_t dw = std::max(dst->w_ >> mip, 1);
+    const uint32_t dh = std::max(dst->h_ >> mip, 1);
+    if (mw > dw || mh > dh || ((format_flag_ & GPU_FORMAT_DEPTH) && (mw != dw || mh != dh))) {
+      static int s_logged = 0;
+      if (s_logged++ < 8) {
+        fprintf(stderr, "WGPU_TEX copy_to skipped: '%s' %ux%u -> '%s' %ux%u\n", name_.c_str(), mw,
+                mh, dst->name_.c_str(), dw, dh);
+        fflush(stderr);
+      }
+      continue;
+    }
     WGPUExtent3D ext = {mw, uint32_t(std::max(int(mh), 1)), uint32_t(layers)};
     wgpuCommandEncoderCopyTextureToTexture(enc, &src_info, &dst_info, &ext);
   }
