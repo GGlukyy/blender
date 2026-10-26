@@ -2672,6 +2672,27 @@ static void radial_control_set_tex(RadialControl *rc)
                                                            PROP_DISTANCE_DIAMETER))))
       {
 
+#ifdef __EMSCRIPTEN__
+        /* WebGPU cannot swizzle texture views (swizzle_set is a no-op): an R8 texture would sample
+         * as (m,0,0,1) = an opaque dark square around the cursor. Bake "111r" into RGBA8. */
+        {
+          const int px = ibuf->x * ibuf->y;
+          float *rgba = MEM_new_array_uninitialized<float>(size_t(px) * 4, "radial_control_rgba");
+          const float *src = ibuf->float_data();
+          for (int i = 0; i < px; i++) {
+            rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 1.0f;
+            rgba[i * 4 + 3] = src[i];
+          }
+          rc->texture = GPU_texture_create_2d("radial_control",
+                                              ibuf->x,
+                                              ibuf->y,
+                                              1,
+                                              gpu::TextureFormat::UNORM_8_8_8_8,
+                                              GPU_TEXTURE_USAGE_SHADER_READ,
+                                              rgba);
+          MEM_delete(rgba);
+        }
+#else
         rc->texture = GPU_texture_create_2d("radial_control",
                                             ibuf->x,
                                             ibuf->y,
@@ -2679,6 +2700,7 @@ static void radial_control_set_tex(RadialControl *rc)
                                             gpu::TextureFormat::UNORM_8,
                                             GPU_TEXTURE_USAGE_SHADER_READ,
                                             ibuf->float_data());
+#endif
 
         GPU_texture_filter_mode(rc->texture, true);
         GPU_texture_swizzle_set(rc->texture, "111r");

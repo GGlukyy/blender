@@ -404,6 +404,20 @@ static void load_tex_cursor_task_cb(void *__restrict userdata,
   }
 }
 
+#ifdef __EMSCRIPTEN__
+/* The WebGPU backend cannot swizzle texture views (GPU_texture_swizzle_set is a no-op), so the
+ * R8 mask textures sampled as "rrrr" would read as opaque (black square around the cursor).
+ * Use RGBA8 with the mask replicated into every channel instead. */
+static uchar *expand_r_to_rgba(const uchar *src, int size)
+{
+  uchar *dst = MEM_new_array_uninitialized<uchar>(size_t(size) * size * 4, "expand_rgba");
+  for (int i = 0; i < size * size; i++) {
+    dst[i * 4 + 0] = dst[i * 4 + 1] = dst[i * 4 + 2] = dst[i * 4 + 3] = src[i];
+  }
+  return dst;
+}
+#endif
+
 static int load_tex_cursor(Paint *paint, Brush *br, float zoom)
 {
   bool init;
@@ -458,18 +472,31 @@ static int load_tex_cursor(Paint *paint, Brush *br, float zoom)
     BLI_parallel_range_settings_defaults(&settings);
     BLI_task_parallel_range(0, size, &data, load_tex_cursor_task_cb, &settings);
 
+    const uchar *upload = buffer;
+#ifdef __EMSCRIPTEN__
+    uchar *expanded = expand_r_to_rgba(buffer, size);
+    upload = expanded;
+#endif
     if (!cursor_snap.overlay_texture) {
       eGPUTextureUsage usage = GPU_TEXTURE_USAGE_SHADER_READ | GPU_TEXTURE_USAGE_ATTACHMENT;
+#ifdef __EMSCRIPTEN__
+      cursor_snap.overlay_texture = GPU_texture_create_2d(
+          "cursor_snap_overaly", size, size, 1, gpu::TextureFormat::UNORM_8_8_8_8, usage, nullptr);
+#else
       cursor_snap.overlay_texture = GPU_texture_create_2d(
           "cursor_snap_overaly", size, size, 1, gpu::TextureFormat::UNORM_8, usage, nullptr);
-      GPU_texture_update(cursor_snap.overlay_texture, GPU_DATA_UBYTE, buffer);
+#endif
+      GPU_texture_update(cursor_snap.overlay_texture, GPU_DATA_UBYTE, upload);
 
       GPU_texture_swizzle_set(cursor_snap.overlay_texture, "rrrr");
     }
 
     if (init) {
-      GPU_texture_update(cursor_snap.overlay_texture, GPU_DATA_UBYTE, buffer);
+      GPU_texture_update(cursor_snap.overlay_texture, GPU_DATA_UBYTE, upload);
     }
+#ifdef __EMSCRIPTEN__
+    MEM_delete(expanded);
+#endif
 
     if (buffer) {
       MEM_delete(buffer);
