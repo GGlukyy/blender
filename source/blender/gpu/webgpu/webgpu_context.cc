@@ -2389,6 +2389,7 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
   if (it != bind_group_cache_.end()) {
     extern int g_stat_bg_hits;
     g_stat_bg_hits++;
+    it->second.used = ++bg_clock_;
     wgpuBindGroupAddRef(it->second.bg); /* Caller owns one ref (it releases). */
     return it->second.bg;
   }
@@ -2454,8 +2455,24 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
   WGPUBindGroup bg = wgpuDeviceCreateBindGroup(device_, &desc);
   if (bg && !cache_off) {
     if (bind_group_cache_.size() >= 2048) {
-      /* Crude bound: drop everything; hot entries repopulate next frame. */
-      clear_bind_group_cache();
+      /* Evict the older half (LRU): clearing everything made hot groups rebuild in one burst and
+       * released ~2048 groups for GC at once (WebKit keeps destroyed memory until then). */
+      std::vector<uint64_t> stamps;
+      stamps.reserve(bind_group_cache_.size());
+      for (auto &kv : bind_group_cache_) {
+        stamps.push_back(kv.second.used);
+      }
+      std::nth_element(stamps.begin(), stamps.begin() + stamps.size() / 2, stamps.end());
+      const uint64_t cut = stamps[stamps.size() / 2];
+      for (auto itc = bind_group_cache_.begin(); itc != bind_group_cache_.end();) {
+        if (itc->second.used < cut) {
+          cached_bind_group_release(itc->second);
+          itc = bind_group_cache_.erase(itc);
+        }
+        else {
+          ++itc;
+        }
+      }
     }
     /* Pin every resource handle (see the header comment: a recycled handle ID
      * would make a DIFFERENT future resource hash onto this cached group). */
@@ -2471,7 +2488,7 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
       }
     }
     wgpuBindGroupAddRef(bg);
-    bind_group_cache_[key] = {bg, entries};
+    bind_group_cache_[key] = {bg, entries, ++bg_clock_};
   }
   return bg;
 }

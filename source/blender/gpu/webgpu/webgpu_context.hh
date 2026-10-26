@@ -136,8 +136,10 @@ class WebGPUContext : public Context {
   struct CachedBindGroup {
     WGPUBindGroup bg;
     std::vector<WGPUBindGroupEntry> entries;
+    uint64_t used = 0; /* LRU clock value of the last hit (H1 step 3). */
   };
   std::unordered_map<uint64_t, CachedBindGroup> bind_group_cache_;
+  uint64_t bg_clock_ = 0;
   void cached_bind_group_release(CachedBindGroup &c)
   {
     for (const WGPUBindGroupEntry &e : c.entries) {
