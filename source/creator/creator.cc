@@ -450,8 +450,12 @@ int main(int argc,
           const gdev = Module["preinitializedWebGPUDevice"];
           /* Dawn validation errors are otherwise only a (rate limited) browser warning. */
           let gerrs = 0;
+          const gerr_ch = new BroadcastChannel("blender-gpuerr");
           gdev.addEventListener("uncapturederror", (e) => {
-            if (gerrs++ < 30) console.log("WGPU_UNCAPTURED " + String(e.error.message).slice(0, 400));
+            if (gerrs++ < 30) {
+              console.log("WGPU_UNCAPTURED " + String(e.error.message).slice(0, 400));
+              gerr_ch.postMessage(String(e.error.message).slice(0, 400));
+            }
           });
           /* Sprint "iPad vydrží" M0/M2: live GPU buffer/texture counters for the telemetry
            * (demo/src/telemetry.js, channel "blender-gpumem"). A resource counts as live until
