@@ -140,7 +140,7 @@ struct Film {
   [[image(3, read_write, SFLOAT_16_16_16_16)]] image2D out_combined_img;
   [[image(4, read_write, SFLOAT_32)]] image2D depth_img;
   [[image(5, read_write, SFLOAT_16_16_16_16)]] image2DArray color_accum_img;
-  [[image(6, read_write, SFLOAT_16)]] image2DArray value_accum_img;
+  [[image(6, read_write, SFLOAT_32)]] image2DArray value_accum_img;
 
   [[resource_table]] srt_t<Cryptomatte> cryptomatte;
   [[resource_table]] srt_t<Uniform> uniforms;

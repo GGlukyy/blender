@@ -508,7 +508,7 @@ void Film::init(const int2 &extent, const rcti *output_rect)
                              int2(1);
 
     gpu::TextureFormat color_format = gpu::TextureFormat::SFLOAT_16_16_16_16;
-    gpu::TextureFormat float_format = gpu::TextureFormat::SFLOAT_16;
+    gpu::TextureFormat float_format = gpu::TextureFormat::SFLOAT_32; /* r16float read_write needs texture-formats-tier2 (Safari lacks it) */
     gpu::TextureFormat weight_format = gpu::TextureFormat::SFLOAT_32;
     gpu::TextureFormat depth_format = gpu::TextureFormat::SFLOAT_32;
     gpu::TextureFormat cryptomatte_format = gpu::TextureFormat::SFLOAT_32_32_32_32;
