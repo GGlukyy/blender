@@ -2433,6 +2433,32 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
       }
       else if (seen_nohandle.count(k_h)) {
         c_handle++;
+        /* Which binding's buffer handle changed vs the last group with the same non-buffer key? */
+        static std::unordered_map<uint64_t, std::vector<WGPUBuffer>> last_bufs;
+        static std::map<std::string, int> why_hist;
+        std::vector<WGPUBuffer> cur;
+        for (const WGPUBindGroupEntry &e : entries) {
+          cur.push_back(e.buffer);
+        }
+        auto lb = last_bufs.find(k_h);
+        if (lb != last_bufs.end() && lb->second.size() == cur.size()) {
+          for (size_t i = 0; i < cur.size(); i++) {
+            const bool pc = i < bindings.size() && bindings[i].kind == WgslResourceBinding::PUSH_CONST;
+            if (cur[i] != lb->second[i] && i < bindings.size()) {
+              why_hist[std::string(pc ? "PC:" : "") + bindings[i].res_name + "@" + shader->name_get()]++;
+            }
+          }
+        }
+        last_bufs[k_h] = cur;
+        static int n_print = 0;
+        if (++n_print % 3000 == 0) {
+          for (auto &kv : why_hist) {
+            if (kv.second > 50) {
+              fprintf(stderr, "WGPU_BGWHY2 %d %s\n", kv.second, kv.first.c_str());
+            }
+          }
+          why_hist.clear();
+        }
       }
       else {
         c_new++;
