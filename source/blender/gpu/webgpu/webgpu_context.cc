@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <malloc.h>
 #include <map>
 #include <unordered_map>
 
@@ -50,12 +51,12 @@
 #  include <emscripten/em_js.h>
 /* ?perf=1 overlay (demo/src/main.js): the render pthread cannot touch the page DOM, so it posts a
  * sample to a BroadcastChannel every ~30 frames. */
-EM_JS(void, wgpu_perf_post, (int frame, double dt_avg_ms, double dt_max_ms, int submits, int passes, int bindgroups, int tex, int tex_mb, double api_ms, int imm_bufs, int imm_kb), {
+EM_JS(void, wgpu_perf_post, (int frame, double dt_avg_ms, double dt_max_ms, int submits, int passes, int bindgroups, int tex, int tex_mb, double api_ms, int imm_bufs, int imm_kb, double heap_used_mb), {
   if (!globalThis.__perf_bc) {
     globalThis.__perf_bc = new BroadcastChannel("blender-perf");
   }
   globalThis.__perf_bc.postMessage({frame, dt_avg_ms, dt_max_ms, submits, passes, bindgroups, tex, tex_mb, api_ms, imm_bufs, imm_kb,
-                                    heap_mb: HEAPU8.length / 1048576});
+                                    heap_mb: HEAPU8.length / 1048576, heap_used_mb});
 });
 /* "Compiling shaders…" overlay (demo/src/main.js): the render pthread blocks for seconds while the
  * browser compiles big pipelines; the main thread stays free and shows a message. */
@@ -655,6 +656,11 @@ void WebGPUContext::flush_encoder()
   }
   wgpuCommandEncoderRelease(encoder_);
   encoder_ = nullptr;
+  /* H8: contexts that never present (DRW/preview) otherwise keep every full arena chunk forever
+   * (~1 MB/s in Sculpt). Everything recorded so far is submitted, so the arena can restart. */
+  if (!uni_arena_retired_.empty()) {
+    uniform_arena_reset();
+  }
   /* After encoder_ is cleared (this context no longer records) — and only destroy while no OTHER
    * context (DRW viewport / preview) still has recorded-but-unsubmitted work that may use them. */
   wgpu_flush_buffer_frees();
@@ -1187,12 +1193,19 @@ void WebGPUContext::depth_snapshot_capture()
     md.size = size;
     md.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
     WGPUBuffer map_buf = nullptr;
+    /* H8-1: any cached buffer that is big enough serves (Material Preview resizes the viewport
+     * region constantly; exact-size matching created one 1.5 MB buffer per new size). */
+    size_t best = g_depth_free_bufs.size();
     for (size_t i = 0; i < g_depth_free_bufs.size(); i++) {
-      if (g_depth_free_bufs[i].first == size) {
-        map_buf = g_depth_free_bufs[i].second;
-        g_depth_free_bufs.erase(g_depth_free_bufs.begin() + i);
-        break;
+      if (g_depth_free_bufs[i].first >= size &&
+          (best == g_depth_free_bufs.size() || g_depth_free_bufs[i].first < g_depth_free_bufs[best].first))
+      {
+        best = i;
       }
+    }
+    if (best != g_depth_free_bufs.size()) {
+      map_buf = g_depth_free_bufs[best].second;
+      g_depth_free_bufs.erase(g_depth_free_bufs.begin() + best);
     }
     if (map_buf == nullptr) {
       map_buf = wgpuDeviceCreateBuffer(device_, &md);
@@ -1266,15 +1279,22 @@ void WebGPUContext::depth_snapshot_capture()
       bool keep = false;
       if (status == WGPUMapAsyncStatus_Success) {
         wgpuBufferUnmap(mc->buf);
-        /* Drop cached buffers of other sizes (window resized), keep at most 2. */
-        for (size_t i = g_depth_free_bufs.size(); i-- > 0;) {
-          if (g_depth_free_bufs[i].first != mc->size) {
-            wgpu_buffer_free(g_depth_free_bufs[i].second);
-            g_depth_free_bufs.erase(g_depth_free_bufs.begin() + i);
+        /* Keep the 2 largest buffers (capacity, not the mapped size). */
+        const uint64_t cap = wgpuBufferGetSize(mc->buf);
+        if (g_depth_free_bufs.size() >= 2) {
+          size_t smallest = 0;
+          for (size_t i = 1; i < g_depth_free_bufs.size(); i++) {
+            if (g_depth_free_bufs[i].first < g_depth_free_bufs[smallest].first) {
+              smallest = i;
+            }
+          }
+          if (g_depth_free_bufs[smallest].first < cap) {
+            wgpu_buffer_free(g_depth_free_bufs[smallest].second);
+            g_depth_free_bufs.erase(g_depth_free_bufs.begin() + smallest);
           }
         }
         if (g_depth_free_bufs.size() < 2) {
-          g_depth_free_bufs.emplace_back(mc->size, mc->buf);
+          g_depth_free_bufs.emplace_back(cap, mc->buf);
           keep = true;
         }
       }
@@ -1663,7 +1683,8 @@ void WebGPUContext::present_backbuffer(int w, int h)
         extern long long g_stat_tex_bytes, g_stat_imm_bytes;
         wgpu_perf_post(s_frame, s_acc_ms / s_acc_n, s_max_ms, g_stat_submits, g_stat_passes,
                        g_stat_bindgroups, g_stat_tex_count, int(g_stat_tex_bytes / (1024 * 1024)),
-                       s_acc_api / s_acc_n, g_stat_imm_buffers, int(g_stat_imm_bytes / 1024));
+                       s_acc_api / s_acc_n, g_stat_imm_buffers, int(g_stat_imm_bytes / 1024),
+                       double(mallinfo().uordblks + mallinfo().hblkhd) / 1048576.0);
         s_acc_ms = s_max_ms = s_acc_api = 0.0;
         s_acc_n = 0;
       }
