@@ -65,22 +65,23 @@ void PixelBitmapDrawer::draw(const float x,
   if (use_mipmap) {
     usage |= GPU_TEXTURE_USAGE_SHADER_WRITE;
   }
-  /* Small cache of non-mipmapped textures: a redraw loop (e.g. dragging) would otherwise create and
+  /* Small cache of textures (also mipmapped ones: Sculpt redraws a scaled-down brush image every frame): a redraw loop (e.g. dragging) would otherwise create and
    * free a texture per call. WebKit keeps freed GPU memory alive until the bind groups holding it are
    * garbage collected, which kills iPad Safari (docs/IPAD_CRASH.md H3). */
   struct CachedTex {
     gpu::Texture *tex = nullptr;
     int w = 0, h = 0;
     gpu::TextureFormat format = gpu::TextureFormat::Invalid;
+    bool mip = false;
     uint64_t used = 0;
   };
   static CachedTex cache[4];
   static uint64_t cache_clock = 0;
   gpu::Texture *tex = nullptr;
   CachedTex *cached = nullptr;
-  if (!use_mipmap) {
+  {
     for (CachedTex &c : cache) {
-      if (c.tex && c.w == img_w && c.h == img_h && c.format == gpu_format) {
+      if (c.tex && c.w == img_w && c.h == img_h && c.format == gpu_format && c.mip == use_mipmap) {
         cached = &c;
         break;
       }
@@ -105,12 +106,10 @@ void PixelBitmapDrawer::draw(const float x,
       cached->w = img_w;
       cached->h = img_h;
       cached->format = gpu_format;
+      cached->mip = use_mipmap;
     }
     cached->used = ++cache_clock;
     tex = cached->tex;
-  }
-  else {
-    tex = GPU_texture_create_2d("immDrawPixels", img_w, img_h, mip_len, gpu_format, usage, nullptr);
   }
   if (tex == nullptr) {
     return;
