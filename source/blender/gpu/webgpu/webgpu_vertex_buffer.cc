@@ -141,6 +141,21 @@ void WebGPUVertexBuffer::update_sub(uint start, uint len, const void *data)
   }
 }
 
+void WebGPUVertexBuffer::copy_sub(VertBuf &source_buf,
+                                  uint source_first_vertex,
+                                  uint dest_first_vertex,
+                                  uint vertex_len)
+{
+  /* N1b (5.3): new pure virtual. Copy through the CPU shadow (no GPU->GPU copy node on this backend). */
+  const uchar *src = static_cast<WebGPUVertexBuffer &>(source_buf).cpu_data();
+  if (!src) {
+    fprintf(stderr, "WebGPUVertexBuffer::copy_sub: source has no CPU shadow, skipped\n");
+    return;
+  }
+  const uint stride = format.stride;
+  this->update_sub(dest_first_vertex * stride, vertex_len * stride, src + size_t(source_first_vertex) * stride);
+}
+
 void WebGPUVertexBuffer::bind_as_ssbo(uint binding)
 {
   WebGPUContext *ctx = WebGPUContext::get();

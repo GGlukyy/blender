@@ -37,6 +37,10 @@ class WebGPUVertexBuffer : public VertBuf {
   void bind_as_texture(uint binding) override;
   void wrap_handle(uint64_t /*handle*/) override {}
   void update_sub(uint start, uint len, const void *data) override;
+  void copy_sub(VertBuf &source_buf,
+                uint source_first_vertex,
+                uint dest_first_vertex,
+                uint vertex_len) override;
   void read(void *data) const override;
 
   /* CPU shadow + content generation (point-sprite de-indexing cache, webgpu_batch.cc). */

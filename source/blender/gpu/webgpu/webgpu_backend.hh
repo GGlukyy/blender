@@ -22,6 +22,7 @@
 #include <cstdio>
 
 #include "GPU_capabilities.hh"
+#include "GPU_work_in_flight.hh"
 #include "GPU_worker.hh"
 
 #include "gpu_backend.hh"
@@ -85,6 +86,14 @@ class WebGPUQueryPool : public QueryPool {
                                r_values.data());
     }
   }
+};
+
+/* No-op limiter: WebGPU submits are not throttled here yet. */
+class WebGPUWorkInFlight : public WorkInFlight {
+ public:
+  void reset() override {}
+  void begin_work() override {}
+  void end_work() override {}
 };
 
 class WebGPUBackend : public GPUBackend {
@@ -682,6 +691,11 @@ class WebGPUBackend : public GPUBackend {
 
   /* TODO: still stubs — implement as the render path starts exercising them. */
   Fence *fence_alloc() override { return nullptr; }
+  /* N1b (5.3): new pure virtual. No in-flight limiter on this backend yet (see BACKLOG H2). */
+  WorkInFlight *work_in_flight_alloc(unsigned int /*max_in_flight*/) override
+  {
+    return new WebGPUWorkInFlight();
+  }
   PixelBuffer *pixelbuf_alloc(size_t /*size*/) override { return nullptr; }
   /* Occlusion queries: WebGPU supports them, but reading results back is async
    * (ResolveQuerySet → buffer map) while get_occlusion_result() is synchronous —

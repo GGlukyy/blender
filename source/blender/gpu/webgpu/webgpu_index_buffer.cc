@@ -106,3 +106,20 @@ void WebGPUIndexBuf::update_sub(uint start, uint len, const void *data)
 }
 
 }  // namespace blender::gpu
+
+namespace blender::gpu {
+void WebGPUIndexBuf::copy_sub(IndexBuf &source_buf,
+                              uint source_first_index,
+                              uint dest_first_index,
+                              uint index_len)
+{
+  /* N1b (5.3): new pure virtual. Copy through the CPU shadow (no GPU->GPU copy node on this backend). */
+  const uchar *src = static_cast<const uchar *>(static_cast<WebGPUIndexBuf &>(source_buf).cpu_data());
+  if (!src) {
+    fprintf(stderr, "WebGPUIndexBuf::copy_sub: source has no CPU shadow, skipped\n");
+    return;
+  }
+  const uint size = to_bytesize(index_type_);
+  this->update_sub(dest_first_index * size, index_len * size, src + size_t(source_first_index) * size);
+}
+}  // namespace blender::gpu

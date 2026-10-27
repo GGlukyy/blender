@@ -31,6 +31,10 @@ class WebGPUIndexBuf : public IndexBuf {
   void bind_as_ssbo(uint binding) override;
   void read(uint32_t *data) const override;
   void update_sub(uint start, uint len, const void *data) override;
+  void copy_sub(IndexBuf &source_buf,
+                uint source_first_index,
+                uint dest_first_index,
+                uint index_len) override;
 
   /* CPU shadow (null for subranges) + content generation, for point-sprite de-indexing. */
   const void *cpu_data() const
