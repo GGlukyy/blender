@@ -886,9 +886,14 @@ void denoise([[work_group_id]] const uint3 group_id,
  * \{ */
 
 struct Resolve {
-  [[image(3, read_write, RAYTRACE_RADIANCE_FORMAT)]] image2D closure0_img;
-  [[image(4, read_write, RAYTRACE_RADIANCE_FORMAT)]] image2D closure1_img;
-  [[image(5, read_write, RAYTRACE_RADIANCE_FORMAT)]] image2D closure2_img;
+  /* Safari: rgba16f read_write needs texture-formats-tier2. Previous content is read through samplers
+   * (the backend snapshots the textures when also bound as image); the images are write only. */
+  [[sampler(11)]] const sampler2D closure0_tx;
+  [[sampler(12)]] const sampler2D closure1_tx;
+  [[sampler(13)]] const sampler2D closure2_tx;
+  [[image(3, write, RAYTRACE_RADIANCE_FORMAT)]] image2D closure0_img;
+  [[image(4, write, RAYTRACE_RADIANCE_FORMAT)]] image2D closure1_img;
+  [[image(5, write, RAYTRACE_RADIANCE_FORMAT)]] image2D closure2_img;
 };
 
 [[metal_max_total_threads_per_threadgroup(400)]] /* Tweak performance on metal. */
@@ -1026,13 +1031,13 @@ void resolve([[work_group_id]] const uint3 group_id,
         if (use_raytrace) {
           /* TODO(fclem): Layered texture. */
           if (layer_index == 0u) {
-            radiance_raytrace = imageLoad(srt.closure0_img, texel_fullres);
+            radiance_raytrace = texelFetch(srt.closure0_tx, texel_fullres, 0);
           }
           else if (layer_index == 1u) {
-            radiance_raytrace = imageLoad(srt.closure1_img, texel_fullres);
+            radiance_raytrace = texelFetch(srt.closure1_tx, texel_fullres, 0);
           }
           else if (layer_index == 2u) {
-            radiance_raytrace = imageLoad(srt.closure2_img, texel_fullres);
+            radiance_raytrace = texelFetch(srt.closure2_tx, texel_fullres, 0);
           }
         }
         float4 radiance_mixed = mix(radiance_raytrace, radiance_fast_gi, mix_fac);

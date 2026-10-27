@@ -306,6 +306,7 @@ void DepthOfField::reduce_pass_sync()
   reduce_ps_.bind_ssbo("scatter_fg_indirect_buf", scatter_fg_indirect_buf_);
   reduce_ps_.bind_ssbo("scatter_bg_indirect_buf", scatter_bg_indirect_buf_);
   reduce_ps_.bind_image("inout_color_lod0_img", &reduced_color_mip_views_[0]);
+  reduce_ps_.bind_texture("inout_color_lod0_tx", &reduced_color_mip_views_[0], no_filter);
   reduce_ps_.bind_image("out_color_lod1_img", &reduced_color_mip_views_[1]);
   reduce_ps_.bind_image("out_color_lod2_img", &reduced_color_mip_views_[2]);
   reduce_ps_.bind_image("out_color_lod3_img", &reduced_color_mip_views_[3]);

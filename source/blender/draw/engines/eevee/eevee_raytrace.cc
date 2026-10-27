@@ -383,6 +383,9 @@ void RayTraceModule::sync()
     pass.bind_image("closure0_img", &fast_gi_scan_output_tx_[0]);
     pass.bind_image("closure1_img", &fast_gi_scan_output_tx_[1]);
     pass.bind_image("closure2_img", &fast_gi_scan_output_tx_[2]);
+    pass.bind_texture("closure0_tx", &fast_gi_scan_output_tx_[0]);
+    pass.bind_texture("closure1_tx", &fast_gi_scan_output_tx_[1]);
+    pass.bind_texture("closure2_tx", &fast_gi_scan_output_tx_[2]);
     pass.bind_ssbo("tiles_coord_buf", &fast_gi_denoise_tiles_buf_);
     pass.bind_resources(inst_.uniform_data);
     pass.bind_resources(inst_.sampling);

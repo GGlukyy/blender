@@ -541,7 +541,10 @@ struct Resources {
 
   [[sampler(0)]] sampler2D downsample_tx;
 
-  [[image(0, read_write, SFLOAT_16_16_16_16)]] image2D inout_color_lod0_img;
+  /* Safari: rgba16f read_write needs texture-formats-tier2. Read through a sampler (the backend snapshots
+   * the texture when it is also bound as image); the image is write only. */
+  [[sampler(1)]] sampler2D inout_color_lod0_tx;
+  [[image(0, write, SFLOAT_16_16_16_16)]] image2D inout_color_lod0_img;
   [[image(1, write, SFLOAT_16_16_16_16)]] image2D out_color_lod1_img;
   [[image(2, write, SFLOAT_16_16_16_16)]] image2D out_color_lod2_img;
   [[image(3, write, SFLOAT_16_16_16_16)]] image2D out_color_lod3_img;
@@ -647,7 +650,7 @@ void comp_main([[resource_table]] Resources &srt,
   int2 texel = min(int2(global_id.xy), imageSize(srt.inout_color_lod0_img) - 1);
   uint2 thread_co = local_id.xy;
 
-  float4 local_color = imageLoad(srt.inout_color_lod0_img, texel);
+  float4 local_color = texelFetch(srt.inout_color_lod0_tx, texel, 0);
   float local_coc = imageLoad(srt.in_coc_lod0_img, texel).r;
 
   /* Only scatter if luminous enough. */
