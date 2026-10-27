@@ -57,7 +57,7 @@ EM_JS(void, wgpu_perf_post, (int frame, double dt_avg_ms, double dt_max_ms, int 
     globalThis.__perf_bc = new BroadcastChannel("blender-perf");
   }
   globalThis.__perf_bc.postMessage({frame, dt_avg_ms, dt_max_ms, submits, passes, bindgroups, tex, tex_mb, api_ms, imm_bufs, imm_kb,
-                                    heap_mb: HEAPU8.length / 1048576, heap_used_mb});
+                                    heap_mb: wasmMemory.buffer.byteLength / 1048576, heap_used_mb});
 });
 /* "Compiling shaders…" overlay (demo/src/main.js): the render pthread blocks for seconds while the
  * browser compiles big pipelines; the main thread stays free and shows a message. */
