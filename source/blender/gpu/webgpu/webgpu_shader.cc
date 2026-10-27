@@ -531,7 +531,7 @@ static std::string webgpu_glsl_patch(const char *stage_define)
  * globalThis.__WGSL_CACHE__ before main() runs; lookups here are synchronous.
  * Keys: "v1:<stage>:<fnv1a64 of the joined GLSL>". The version salt must be
  * bumped whenever the translator or the GLSL patching changes output. */
-EM_JS(int, wgpu_wgsl_cache_query, (const char *key), {
+EM_JS(int, wgpu_wgsl_cache_query, (const char *key, const char *seed_url), {
   /* Blender runs on a PROXY_TO_PTHREAD worker: the page's globalThis (where main.js builds
    * __WGSL_CACHE__) is NOT this global, so load the shipped seed here, once, with a synchronous
    * XHR (allowed in workers). The worker script is blender.js, the seed sits next to it. */
@@ -539,14 +539,17 @@ EM_JS(int, wgpu_wgsl_cache_query, (const char *key), {
     globalThis.__WGSL_SEED_TRIED__ = true;
     try {
       const x = new XMLHttpRequest();
-      x.open("GET", new URL("wgsl-cache.json", globalThis.location.href).href, false);
+      /* location.href of the pthread worker can be a blob:/empty URL → `new URL(rel, href)` throws "Invalid URL"
+       * and the seed was never loaded (everything translated at runtime). main.js passes an absolute URL in ENV.WGSL_SEED_URL. */
+      const su = seed_url ? UTF8ToString(seed_url) : "";
+      x.open("GET", su || new URL("wgsl-cache.json", globalThis.location.href).href, false);
       x.send();
       if (x.status === 200) {
         globalThis.__WGSL_CACHE__ = new Map(JSON.parse(x.responseText));
         console.log("WGSL seed loaded: " + globalThis.__WGSL_CACHE__.size + " shaders");
       }
     } catch (e) {
-      console.log("WGSL seed load failed: " + e);
+      console.log("WGSL seed load failed: " + e + " (href=" + globalThis.location.href + ")");
     }
   }
   const m = globalThis.__WGSL_CACHE__;
@@ -600,7 +603,7 @@ static std::string wgsl_cache_key(const char *stage, const std::string &glsl)
 static bool wgsl_cache_get(const char *stage, const std::string &glsl, std::string &r_wgsl)
 {
   const std::string key = wgsl_cache_key(stage, glsl);
-  const int len = wgpu_wgsl_cache_query(key.c_str());
+  const int len = wgpu_wgsl_cache_query(key.c_str(), getenv("WGSL_SEED_URL"));
   if (len < 0) {
     return false;
   }
