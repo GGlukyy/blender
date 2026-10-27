@@ -44,7 +44,6 @@
 
 #  include "BKE_image.hh"
 #  include "BKE_image_gpu.hh"
-#  include "BKE_image_partial_update.hh"
 #  include "DNA_scene_types.h"
 #  include "IMB_imbuf.hh"
 #  include "IMB_imbuf_types.hh"
@@ -745,7 +744,7 @@ static void wm_step_apply_film_result(bContext *C)
     Image *ima = BKE_image_ensure_viewer(CTX_data_main(C), IMA_TYPE_R_RESULT, "Render Result");
     BKE_image_free_gpu_texture_caches(ima);
     BKE_image_signal(CTX_data_main(C), ima, nullptr, IMA_SIGNAL_FREE);
-    BKE_image_partial_update_mark_full_update(ima);
+    /* N1b (5.3): BKE_image_partial_update_* no longer exists; IMA_SIGNAL_FREE above refreshes the viewer. */
     WM_event_add_notifier(C, NC_IMAGE | NA_EDITED, ima);
     WM_event_add_notifier(C, NC_SCENE | ND_RENDER_RESULT, scene);
     fprintf(stderr, "WGPU_FILM injected into RenderResult %dx%d\n", w, h);

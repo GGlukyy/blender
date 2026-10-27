@@ -67,7 +67,7 @@ struct WebOccl {
     for (Object *ob : objects) {
       BMEditMesh *em = BKE_editmesh_from_object(ob);
       Tree t;
-      t.bvh = em ? BKE_bmbvh_new_from_editmesh(em, BMBVH_RESPECT_HIDDEN, nullptr, false) : nullptr;
+      t.bvh = em ? BKE_bmbvh_new_from_editmesh(em, BKE_editmesh_bmesh_get_for_write(ob), BMBVH_RESPECT_HIDDEN, nullptr, false) : nullptr;
       t.obmat = ob->object_to_world();
       t.obinv = math::invert(t.obmat);
       trees.append(t);

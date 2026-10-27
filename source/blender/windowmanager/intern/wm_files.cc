@@ -3427,7 +3427,7 @@ static void wm_web_reinvoke_with_window(bContext *C, const char *opname, bool *r
   if (wm == nullptr || BLI_listbase_is_empty(&wm->windows)) {
     return;
   }
-  wmWindow *win = static_cast<wmWindow *>(wm->windows.first);
+  wmWindow *win = wm->windows.first();
   wmWindow *prev_win = CTX_wm_window(C);
   ScrArea *prev_area = CTX_wm_area(C);
   ARegion *prev_region = CTX_wm_region(C);
@@ -3486,7 +3486,7 @@ static wmOperatorStatus wm_open_mainfile__select_file_path_exec(bContext *C, wmO
     g_web_open_ready = false;
     RNA_string_set(op->ptr, "filepath", g_web_open_path);
     wm_open_init_load_ui(op, true);
-    wm_open_init_use_scripts(op, true);
+    wm_open_init_use_scripts(op, OpenTrust::FilePath);
     op->customdata = nullptr;
     WM_event_add_fileselect(C, op);
     return OPERATOR_RUNNING_MODAL;
