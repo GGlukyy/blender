@@ -6,6 +6,7 @@
  * \ingroup gpu
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -290,29 +291,41 @@ WGPURenderPassEncoder WebGPUFrameBuffer::begin_render_pass(WGPUCommandEncoder en
     if (!is_attachmentless() || wctx == nullptr || wctx->device() == nullptr) {
       return nullptr;
     }
-    if (dummy_att_tex_ == nullptr || dummy_w_ != width_ || dummy_h_ != height_) {
-      if (dummy_att_view_) {
-        wgpuTextureViewRelease(dummy_att_view_);
-        dummy_att_view_ = nullptr;
+    /* One shared, never-freed dummy per size: framebuffers have no destructor, so a
+     * per-framebuffer 8192² texture leaked 64 MB for every deleted framebuffer (iPad).
+     * Safe to share: loadOp Clear + storeOp Discard and passes never overlap. */
+    static WGPUDevice s_dev = nullptr;
+    static WGPUTexture s_tex = nullptr;
+    static WGPUTextureView s_view = nullptr;
+    static int s_w = 0, s_h = 0;
+    if (s_view == nullptr || s_dev != wctx->device() || s_w < width_ || s_h < height_) {
+      /* Grow only (max of requested sizes). Release only — a pending command buffer may
+       * still reference the old one. */
+      int nw = (s_dev == wctx->device()) ? std::max(s_w, int(width_)) : int(width_);
+      int nh = (s_dev == wctx->device()) ? std::max(s_h, int(height_)) : int(height_);
+      if (s_view) {
+        wgpuTextureViewRelease(s_view);
+        s_view = nullptr;
       }
-      if (dummy_att_tex_) {
-        /* Release only — a pending command buffer may still reference it. */
-        wgpuTextureRelease(dummy_att_tex_);
-        dummy_att_tex_ = nullptr;
+      if (s_tex) {
+        wgpuTextureRelease(s_tex);
+        s_tex = nullptr;
       }
       WGPUTextureDescriptor td = {};
       td.label = {"fb_dummy_attachment", WGPU_STRLEN};
       td.usage = WGPUTextureUsage_RenderAttachment;
       td.dimension = WGPUTextureDimension_2D;
-      td.size = {uint32_t(width_), uint32_t(height_), 1};
+      td.size = {uint32_t(nw), uint32_t(nh), 1};
       td.format = WGPUTextureFormat_R8Unorm;
       td.mipLevelCount = 1;
       td.sampleCount = 1;
-      dummy_att_tex_ = wgpuDeviceCreateTexture(wctx->device(), &td);
-      dummy_att_view_ = dummy_att_tex_ ? wgpuTextureCreateView(dummy_att_tex_, nullptr) : nullptr;
-      dummy_w_ = width_;
-      dummy_h_ = height_;
+      s_tex = wgpuDeviceCreateTexture(wctx->device(), &td);
+      s_view = s_tex ? wgpuTextureCreateView(s_tex, nullptr) : nullptr;
+      s_dev = wctx->device();
+      s_w = nw;
+      s_h = nh;
     }
+    dummy_att_view_ = s_view;
     if (dummy_att_view_ == nullptr) {
       return nullptr;
     }
