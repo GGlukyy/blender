@@ -137,9 +137,12 @@ struct Film {
   [[image(1, write, SFLOAT_32)]] image2DArray out_weight_img;
 
   /* Accumulation buffers. */
-  [[image(3, read_write, SFLOAT_16_16_16_16)]] image2D out_combined_img;
+  [[image(3, write, SFLOAT_16_16_16_16)]] image2D out_combined_img;
   [[image(4, read_write, SFLOAT_32)]] image2D depth_img;
-  [[image(5, read_write, SFLOAT_16_16_16_16)]] image2DArray color_accum_img;
+  /* Safari: rgba16f read_write needs texture-formats-tier2. Reads go through a sampler (the backend
+   * snapshots the texture when it is also bound as image), the image is write only. */
+  [[image(5, write, SFLOAT_16_16_16_16)]] image2DArray color_accum_img;
+  [[sampler(7)]] sampler2DArray color_accum_tx;
   [[image(6, read_write, SFLOAT_32)]] image2DArray value_accum_img;
 
   [[resource_table]] srt_t<Cryptomatte> cryptomatte;
@@ -698,7 +701,7 @@ struct Film {
       return;
     }
 
-    float4 data_film = imageLoadFast(color_accum_img, int3(dst.texel, pass_id));
+    float4 data_film = texelFetch(color_accum_tx, int3(dst.texel, pass_id), 0);
 
     color = (data_film * dst.weight + color) * dst.weight_sum_inv;
 
@@ -716,7 +719,7 @@ struct Film {
       return;
     }
 
-    float4 color_film = imageLoadFast(color_accum_img, int3(dst.texel, color_pass_id));
+    float4 color_film = texelFetch(color_accum_tx, int3(dst.texel, color_pass_id), 0);
     color = (color_film * dst.weight + color) * dst.weight_sum_inv;
     store_color_ex(dst, color_pass_id, color, display, true);
 
@@ -724,7 +727,7 @@ struct Film {
       return;
     }
 
-    float4 light_film = imageLoadFast(color_accum_img, int3(dst.texel, light_pass_id));
+    float4 light_film = texelFetch(color_accum_tx, int3(dst.texel, light_pass_id), 0);
     /* Undivide. */
     light_film *= color_film;
     light = (light_film * dst.weight + light) * dst.weight_sum_inv;
@@ -869,11 +872,11 @@ struct Film {
           /* NOP. */
         }
         else if (display_id == normal_id) {
-          out_color = imageLoadFast(color_accum_img, int3(texel_film, display_id));
+          out_color = texelFetch(color_accum_tx, int3(texel_film, display_id), 0);
         }
         else if (display_id == uni.uniform_buf.film.position_id) {
-          out_color = imageLoadFast(color_accum_img,
-                                    int3(texel_film, uni.uniform_buf.film.position_id));
+          out_color = texelFetch(
+              color_accum_tx, int3(texel_film, uni.uniform_buf.film.position_id), 0);
         }
       }
     }
@@ -1073,11 +1076,11 @@ void accumulate_or_display_frag([[resource_table]] const FilmDisplay &srt,
       frag_out.color.a = 1.0f;
     }
     else if (uni.uniform_buf.film.display_storage_type == PASS_STORAGE_COLOR) {
-      frag_out.color = imageLoadFast(film.color_accum_img, int3(texel_film, film.display_id));
+      frag_out.color = texelFetch(film.color_accum_tx, int3(texel_film, film.display_id), 0);
     }
     else /* PASS_STORAGE_CRYPTOMATTE */ {
       frag_out.color = cryptomatte::false_color(
-          imageLoadFast(cryptomatte.cryptomatte_img, int3(texel_film, film.display_id)).r);
+          imageLoadFast(cryptomatte.cryptomatte_img, int3(texel_film, film.display_id * 4)).r);
     }
   }
   else {
@@ -1116,11 +1119,11 @@ void display_frag([[resource_table]] Film &film,
     frag_out.color.a = 1.0f;
   }
   else if (uni.uniform_buf.film.display_storage_type == PASS_STORAGE_COLOR) {
-    frag_out.color = imageLoadFast(film.color_accum_img, int3(texel, film.display_id));
+    frag_out.color = texelFetch(film.color_accum_tx, int3(texel, film.display_id), 0);
   }
   else /* PASS_STORAGE_CRYPTOMATTE */ {
     frag_out.color = cryptomatte::false_color(
-        imageLoadFast(cryptomatte.cryptomatte_img, int3(texel, film.display_id)).r);
+        imageLoadFast(cryptomatte.cryptomatte_img, int3(texel, film.display_id * 4)).r);
   }
 
   out_depth = imageLoadFast(film.depth_img, texel).r;

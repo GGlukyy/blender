@@ -1023,6 +1023,13 @@ void DeferredLayer::end_sync(bool is_first_pass,
       pass.bind_image(RBUFS_COLOR_SLOT, &inst_.render_buffers.rp_color_tx);
       pass.bind_image(RBUFS_VALUE_SLOT, &inst_.render_buffers.rp_value_tx);
       pass.bind_image("radiance_feedback_img", &radiance_feedback_tx_);
+      /* Read side of the feedback (unused sampler when the feedback path is off). */
+      if (use_feedback_output_ && use_clamp_direct_) {
+        pass.bind_texture("radiance_feedback_tx", &radiance_feedback_tx_);
+      }
+      else {
+        pass.bind_texture("radiance_feedback_tx", &indirect_result_.closures[0]);
+      }
       pass.bind_resources(inst_.gbuffer);
       pass.bind_resources(inst_.uniform_data);
       pass.bind_resources(inst_.hiz_buffer.front);

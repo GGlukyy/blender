@@ -15,7 +15,8 @@ struct Resources {
   [[push_constant]] const int cryptomatte_layer_len;
   [[push_constant]] const int cryptomatte_samples_per_layer;
 
-  [[image(0, read_write, SFLOAT_32_32_32_32)]] image2DArray cryptomatte_img;
+  /* See Cryptomatte in eevee_cryptomatte.bsl.hh: logical layer `l` = physical R32F layers `l*4+c`. */
+  [[image(0, read_write, SFLOAT_32)]] image2DArray cryptomatte_img;
 
   void load_samples(int2 texel, int layer, float2 (&samples)[CRYPTOMATTE_LEVELS_MAX])
   {
@@ -24,7 +25,11 @@ struct Resources {
 
     /* Read all samples from the cryptomatte layer. */
     for (int p = 0; p < pass_len; p++) {
-      float4 pass_sample = imageLoadFast(cryptomatte_img, int3(texel, p + layer_id));
+      int z = (p + layer_id) * 4;
+      float4 pass_sample = float4(imageLoadFast(cryptomatte_img, int3(texel, z)).x,
+                                  imageLoadFast(cryptomatte_img, int3(texel, z + 1)).x,
+                                  imageLoadFast(cryptomatte_img, int3(texel, z + 2)).x,
+                                  imageLoadFast(cryptomatte_img, int3(texel, z + 3)).x);
       samples[p * 2] = pass_sample.xy;
       samples[p * 2 + 1] = pass_sample.zw;
     }
@@ -64,7 +69,11 @@ struct Resources {
       float4 pass_sample;
       pass_sample.xy = samples[p * 2];
       pass_sample.zw = samples[p * 2 + 1];
-      imageStoreFast(cryptomatte_img, int3(texel, p + layer_id), pass_sample);
+      int z = (p + layer_id) * 4;
+      imageStoreFast(cryptomatte_img, int3(texel, z), float4(pass_sample.x));
+      imageStoreFast(cryptomatte_img, int3(texel, z + 1), float4(pass_sample.y));
+      imageStoreFast(cryptomatte_img, int3(texel, z + 2), float4(pass_sample.z));
+      imageStoreFast(cryptomatte_img, int3(texel, z + 3), float4(pass_sample.w));
     }
     /* Ensure stores are visible to later reads. */
     imageFence(cryptomatte_img);

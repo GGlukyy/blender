@@ -32,7 +32,10 @@ struct Combine {
   [[sampler(7)]] sampler2D indirect_radiance_2_tx;
   [[sampler(8)]] sampler2D indirect_radiance_3_tx;
 
-  [[image(5, read_write, SFLOAT_16_16_16_16)]] image2D radiance_feedback_img;
+  /* Safari: rgba16f read_write needs texture-formats-tier2. The previous content is read through a
+   * sampler (the backend snapshots the texture, see Film::color_accum_tx), the image is write only. */
+  [[sampler(9)]] sampler2D radiance_feedback_tx;
+  [[image(5, write, SFLOAT_16_16_16_16)]] image2D radiance_feedback_img;
 
   float3 load_radiance_direct(int2 texel, uchar i) const
   {
@@ -169,7 +172,7 @@ void combine_frag([[resource_table]] Combine &srt,
 
   if (srt.use_radiance_feedback) {
     /* Output unmodified radiance for indirect lighting. */
-    float3 out_radiance = imageLoad(srt.radiance_feedback_img, texel).rgb;
+    float3 out_radiance = texelFetch(srt.radiance_feedback_tx, texel, 0).rgb;
     out_radiance += out_direct + out_indirect;
     /* Prevent NaNs from propagating. */
     out_radiance = any(isnan(out_radiance)) ? float3(0.0f) : out_radiance;

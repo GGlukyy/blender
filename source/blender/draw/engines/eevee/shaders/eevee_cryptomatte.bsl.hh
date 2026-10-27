@@ -41,7 +41,27 @@ struct CryptomatteOutput {
 };
 
 struct Cryptomatte {
-  [[image(7, read_write, SFLOAT_32_32_32_32)]] image2DArray cryptomatte_img;
+  /* Safari: rgba32f read_write is not allowed (only r32*). Each logical RGBA layer `l` is stored as
+   * the 4 physical R32F layers `l * 4 + c`. */
+  [[image(7, read_write, SFLOAT_32)]] image2DArray cryptomatte_img;
+
+  float4 load4(int3 co)
+  {
+    int z = co.z * 4;
+    return float4(imageLoad(cryptomatte_img, int3(co.xy, z)).x,
+                  imageLoad(cryptomatte_img, int3(co.xy, z + 1)).x,
+                  imageLoad(cryptomatte_img, int3(co.xy, z + 2)).x,
+                  imageLoad(cryptomatte_img, int3(co.xy, z + 3)).x);
+  }
+
+  void store4(int3 co, float4 v)
+  {
+    int z = co.z * 4;
+    imageStoreFast(cryptomatte_img, int3(co.xy, z), float4(v.x));
+    imageStoreFast(cryptomatte_img, int3(co.xy, z + 1), float4(v.y));
+    imageStoreFast(cryptomatte_img, int3(co.xy, z + 2), float4(v.z));
+    imageStoreFast(cryptomatte_img, int3(co.xy, z + 3), float4(v.w));
+  }
 
   void clear_samples(FilmSample dst)
   {
@@ -65,7 +85,7 @@ struct Cryptomatte {
 
     for (int i = 0; i < cryptomatte_samples_len / 2; i++) {
       int3 img_co = int3(dst.texel, cryptomatte_layer_id + i);
-      float4 sample_pair = imageLoad(cryptomatte_img, img_co);
+      float4 sample_pair = load4(img_co);
       if (can_merge_sample(sample_pair.xy, crypto_sample)) {
         sample_pair.xy = merge_sample(dst, sample_pair.xy, crypto_sample);
         /* In viewport only one layer is active. */
@@ -86,7 +106,7 @@ struct Cryptomatte {
       else {
         continue;
       }
-      imageStoreFast(cryptomatte_img, img_co, sample_pair);
+      store4(img_co, sample_pair);
       break;
     }
     /* Ensure stores are visible to later reads. */

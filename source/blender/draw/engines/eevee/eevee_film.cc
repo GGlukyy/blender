@@ -12,6 +12,8 @@
  * Input needs to be jittered so that the filter converges to the right result.
  */
 
+#include "MEM_guardedalloc.h"
+
 #include "BLI_hash_c.hh"
 #include "BLI_rect.hh"
 #include "BLI_set.hh"
@@ -511,7 +513,9 @@ void Film::init(const int2 &extent, const rcti *output_rect)
     gpu::TextureFormat float_format = gpu::TextureFormat::SFLOAT_32; /* r16float read_write needs texture-formats-tier2 (Safari lacks it) */
     gpu::TextureFormat weight_format = gpu::TextureFormat::SFLOAT_32;
     gpu::TextureFormat depth_format = gpu::TextureFormat::SFLOAT_32;
-    gpu::TextureFormat cryptomatte_format = gpu::TextureFormat::SFLOAT_32_32_32_32;
+    /* rgba32f read_write is not allowed in Safari (only r32*): each logical RGBA layer is stored as 4
+     * R32F layers (see Cryptomatte in eevee_cryptomatte.bsl.hh). */
+    gpu::TextureFormat cryptomatte_format = gpu::TextureFormat::SFLOAT_32;
 
     int reset = 0;
     reset += depth_tx_.ensure_2d(depth_format, data_.extent);
@@ -531,8 +535,8 @@ void Film::init(const int2 &extent, const rcti *output_rect)
                                 divide_ceil_u(data_.cryptomatte_samples_len, 2u);
     reset += cryptomatte_tx_.ensure_2d_array(cryptomatte_format,
                                              (cryptomatte_array_len > 0) ? data_.extent : int2(1),
-                                             (cryptomatte_array_len > 0) ? cryptomatte_array_len :
-                                                                           1);
+                                             (cryptomatte_array_len > 0) ? cryptomatte_array_len * 4 :
+                                                                           4);
 
     if (reset > 0) {
       data_.use_history = 0;
@@ -646,6 +650,7 @@ void Film::init_pass(PassSimple &pass, gpu::Shader *sh)
   pass.bind_image("out_combined_img", &combined_tx_.next());
   pass.bind_image("depth_img", &depth_tx_);
   pass.bind_image("color_accum_img", &color_accum_tx_);
+  pass.bind_texture("color_accum_tx", &color_accum_tx_);
   pass.bind_image("value_accum_img", &value_accum_tx_);
   pass.bind_image("cryptomatte_img", &cryptomatte_tx_);
   pass.bind_resources(inst_.uniform_data);
@@ -915,6 +920,28 @@ void Film::cryptomatte_sort()
 
 float *Film::read_pass(eViewLayerEEVEEPassType pass_type, int layer_offset)
 {
+  if (pass_storage_type(pass_type) == PASS_STORAGE_CRYPTOMATTE) {
+    /* Interleave the 4 R32F layers of the logical RGBA layer. */
+    int index = pass_id_get(pass_type);
+    if (index == -1) {
+      return nullptr;
+    }
+    cryptomatte_tx_.ensure_layer_views();
+    GPU_memory_barrier(GPU_BARRIER_TEXTURE_UPDATE);
+    const int2 size = int2(cryptomatte_tx_.size());
+    const int64_t px_len = int64_t(size.x) * size.y;
+    float *rgba = MEM_new_array_uninitialized<float>(px_len * 4, __func__);
+    for (const int c : IndexRange(4)) {
+      float *chan = static_cast<float *>(GPU_texture_read(
+          cryptomatte_tx_.layer_view((index + layer_offset) * 4 + c), GPU_DATA_FLOAT, 0));
+      for (const int64_t px : IndexRange(px_len)) {
+        rgba[px * 4 + c] = chan[px];
+      }
+      MEM_delete_void(static_cast<void *>(chan));
+    }
+    return rgba;
+  }
+
   gpu::Texture *pass_tx = this->get_pass_texture(pass_type, layer_offset);
 
   GPU_memory_barrier(GPU_BARRIER_TEXTURE_UPDATE);
@@ -951,7 +978,8 @@ gpu::Texture *Film::get_pass_texture(eViewLayerEEVEEPassType pass_type, int laye
   }
 
   accum_tx.ensure_layer_views();
-  return accum_tx.layer_view(index + layer_offset);
+  /* Cryptomatte: 4 physical R32F layers per logical layer (only the first channel is exposed). */
+  return accum_tx.layer_view(is_cryptomatte ? (index + layer_offset) * 4 : index + layer_offset);
 }
 
 /* Gets the appropriate shader to write the given pass type. This is because passes of different
