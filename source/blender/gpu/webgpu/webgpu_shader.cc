@@ -2162,12 +2162,12 @@ std::string WebGPUShader::resources_declare(const shader::ShaderCreateInfo &info
         ss << " " << res.image.name << ";"; break;
       case ShaderCreateInfo::Resource::BindType::UNIFORM_BUFFER:
         ss << "uniform _" << res.uniformbuf.name.str_no_array() << " { "
-           << info.buffer_typename(res.uniformbuf.type_name, true) << " " << res.uniformbuf.name
+           << res.uniformbuf.type_name << " " << res.uniformbuf.name
            << "; };"; break;
       case ShaderCreateInfo::Resource::BindType::STORAGE_BUFFER:
         print_qualifier(ss, res.storagebuf.qualifiers);
         ss << "buffer _" << res.storagebuf.name.str_no_array() << " { "
-           << info.buffer_typename(res.storagebuf.type_name) << " " << res.storagebuf.name
+           << res.storagebuf.type_name << " " << res.storagebuf.name
            << "; };"; break;
     }
   };

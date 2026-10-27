@@ -67,7 +67,7 @@ class WebGPUTexture : public Texture {
   void copy_to(Texture *dst, IndexRange mip_levels) override;
   void clear(const double4 data) override;
   void swizzle_set(const char /*swizzle_mask*/[4]) override {}
-  void mip_range_set(int min, int max) override;
+  void mip_range_set(int min, int max);
   void read(int mip, eGPUDataFormat format, void *dst) override;
 
   /* Debug probes (WGPU_SUM_TEX) match live textures by name. */
@@ -139,10 +139,7 @@ class WebGPUTexture : public Texture {
  protected:
   bool init_internal() override;
   bool init_internal(VertBuf *vbo) override;
-  bool init_internal(gpu::Texture *src,
-                     int mip_offset,
-                     int layer_offset,
-                     bool use_stencil) override;
+  bool init_internal(gpu::Texture *src, bool use_stencil) override;
 };
 
 WGPUTextureFormat webgpu_texture_format(TextureFormat format);

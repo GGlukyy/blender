@@ -516,11 +516,11 @@ bool WebGPUTexture::init_internal(VertBuf * /*vbo*/)
   return true;
 }
 
-bool WebGPUTexture::init_internal(gpu::Texture *src,
-                                  int mip_offset,
-                                  int layer_offset,
-                                  bool /*use_stencil*/)
+bool WebGPUTexture::init_internal(gpu::Texture *src, bool /*use_stencil*/)
 {
+  /* N1b (5.3): the view range is stored by Texture::init_view instead of being passed in. */
+  const int mip_offset = mip_min_;
+  const int layer_offset = view_layer_start_;
   /* Texture view: share the source's WGPUTexture, expose a WGPUTextureView
    * covering this view's layer/mip window. Film::read_pass reads per-layer
    * views of the accumulation textures, so reads must also work (read() offsets

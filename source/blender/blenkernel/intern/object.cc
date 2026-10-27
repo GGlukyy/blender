@@ -653,7 +653,7 @@ static void object_foreach_cache(ID *id,
   IDCacheKey key;
   key.id_session_uid = id->session_uid;
 
-  constexpr size_t runtime_base_id = size_t(1) << 32u;
+  const size_t runtime_base_id = size_t(1) << 32u;
   key.identifier = runtime_base_id + offsetof(bke::ObjectRuntime, sculpt_session);
   function_callback(
       id, &key, reinterpret_cast<void **>(&ob->runtime->sculpt_session), 0, user_data);

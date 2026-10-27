@@ -1363,22 +1363,26 @@ static void do_render_compositor(Render *re)
     BLI_rw_mutex_unlock(&re->resultmutex);
   }
 
+  bool web_skip_compositor = false;
 #ifdef __EMSCRIPTEN__
   /* Web: the render film reaches the CPU only asynchronously, so the compositor would run on an
    * empty input (GPU device: the result is all zeros and replaces the real image). Skip it and
    * keep the plain render. */
-  if (ntree && (re->r.scemode & R_DOCOMP)) {
+  if (bke::compositor::is_enabled(*re->pipeline_scene_eval,
+                                  bke::compositor::ExecutionMode::Render))
+  {
     if (re->reports) {
       BKE_report(re->reports,
                  RPT_WARNING,
                  "Compositing is not supported in the web build, rendered without it");
     }
-    ntree = nullptr;
+    web_skip_compositor = true;
   }
 #endif
 
   if (!re->display->test_break()) {
-    if (bke::compositor::is_enabled(*re->pipeline_scene_eval,
+    if (!web_skip_compositor &&
+        bke::compositor::is_enabled(*re->pipeline_scene_eval,
                                     bke::compositor::ExecutionMode::Render))
     {
       /* checks if there are render-result nodes that need scene */
