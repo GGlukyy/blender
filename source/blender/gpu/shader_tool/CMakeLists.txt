@@ -86,7 +86,7 @@ endif()
 
 add_executable(shader_tool shader_tool.cc ${SRC})
 blender_target_include_dirs(shader_tool ${INC})
-blender_wasm_host_tool_native(shader_tool "${CMAKE_SOURCE_DIR}/../wasm-sysroot/bin/shader_tool")  # WASM: native binary
+blender_wasm_host_tool_native(shader_tool "${CMAKE_SOURCE_DIR}/../wasm-sysroot/bin/shader_tool_53")  # WASM: native binary
 
 optimize_debug_target(shader_tool)
 
