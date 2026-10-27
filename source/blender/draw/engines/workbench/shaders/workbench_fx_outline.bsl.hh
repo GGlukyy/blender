@@ -20,19 +20,18 @@ struct Outlines {
   [[uniform(WB_WORLD_SLOT)]] WorldData &world_data;
 };
 
-#ifdef GPU_WEBGPU
-/* WGSL cannot SAMPLE integer textures — fetch the nearest texel instead
+/* WGSL cannot SAMPLE integer textures (WebGPU backend) — fetch the nearest texel instead
  * (identical to nearest-sampling an id buffer). */
 inline uint object_id_sample(usampler2D object_id_buffer, float2 uv)
 {
+#ifdef GPU_WEBGPU
   int2 sz = textureSize(object_id_buffer, 0).xy;
   int2 texel = clamp(int2(uv * float2(sz)), int2(0), sz - 1);
   return texelFetch(object_id_buffer, texel, 0).r;
-}
-#  define OBJECT_ID_SAMPLE(uv) object_id_sample(srt.object_id_buffer, uv)
 #else
-#  define OBJECT_ID_SAMPLE(uv) texture(srt.object_id_buffer, uv).r
+  return texture(object_id_buffer, uv).r;
 #endif
+}
 
 struct FragOut {
   [[frag_color(0)]] float4 color;
@@ -47,11 +46,11 @@ void frag([[resource_table]] const Outlines &srt,
 
   float3 offset = float3(srt.world_data.viewport_size_inv, 0.0f) * srt.world_data.ui_scale;
 
-  uint center_id = OBJECT_ID_SAMPLE(uv);
-  uint4 adjacent_ids = uint4(OBJECT_ID_SAMPLE(uv + offset.zy),
-                             OBJECT_ID_SAMPLE(uv - offset.zy),
-                             OBJECT_ID_SAMPLE(uv + offset.xz),
-                             OBJECT_ID_SAMPLE(uv - offset.xz));
+  uint center_id = object_id_sample(srt.object_id_buffer, uv);
+  uint4 adjacent_ids = uint4(object_id_sample(srt.object_id_buffer, uv + offset.zy),
+                             object_id_sample(srt.object_id_buffer, uv - offset.zy),
+                             object_id_sample(srt.object_id_buffer, uv + offset.xz),
+                             object_id_sample(srt.object_id_buffer, uv - offset.xz));
 
   float outline_opacity = 1.0f - dot(float4(equal(uint4(center_id), adjacent_ids)), float4(0.25f));
 

@@ -89,7 +89,7 @@ void cull_main([[resource_table]] Cull &srt,
       /* WORKAROUND: fallthrough with a non-empty case body is not supported by
        * Tint's SPIR-V reader (WebGPU backend); duplicate the shared tail. */
       sphere.center = light.position();
-      sphere.radius = light.local().local.influence_radius_max;
+      sphere.radius = light.local.local.influence_radius_max;
       break;
     }
     case LIGHT_RECT:

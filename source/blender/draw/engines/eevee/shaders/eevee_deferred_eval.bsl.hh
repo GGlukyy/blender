@@ -143,7 +143,7 @@ void light_eval_frag([[resource_table]] LightEval &srt,
    * every variant would run on every pixel and the last write wins. Emulate
    * the stencil test from the gbuffer header, which is what the stencil bits
    * encode in the first place (see StencilBits and tile_classify). */
-  if (int(closure_count) != SRT_CONSTANT_light_closure_eval_count_reflect) {
+  if (int(closure_count) != lrt.constants.light_closure_eval_count_reflect) {
     return;
   }
   if (gbuf.header.has_transmission() != srt.use_transmission) {
