@@ -146,7 +146,7 @@ namespace eevee {
    * full render target. Spill outside the intended rect resolves to invalid
    * render-map pages and is dropped by imageStore bounds checks. */
   if (pipe.is_shadow_pipe) [[static_branch]] {
-    float vp_scale = float(min(1 << out_viewport, SHADOW_TILEMAP_RES)) /
+    float vp_scale = float(shadow_iface.shadow_viewport_tile_len) /
                      float(SHADOW_TILEMAP_RES);
     out_position.x = out_position.x * vp_scale + out_position.w * (vp_scale - 1.0f);
     out_position.y = out_position.y * vp_scale + out_position.w * (vp_scale - 1.0f);
