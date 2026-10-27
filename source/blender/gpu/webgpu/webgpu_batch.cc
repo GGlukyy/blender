@@ -1235,9 +1235,15 @@ void WebGPUBatch::record_draw(int vertex_first,
   }
   else if (ibuf) {
     WebGPUIndexBuf *ibo = static_cast<WebGPUIndexBuf *>(elem_());
-    /* Subrange ibos share the parent's buffer; offset selects the slice. */
-    wgpuRenderPassEncoderSetIndexBuffer(
-        pass, ibuf, ibo->wgpu_index_format(), ibo->wgpu_index_offset_bytes(), WGPU_WHOLE_SIZE);
+    /* Subrange ibos share the parent's buffer; offset selects the slice. Indirect commands already
+     * carry `first_index = index_start` (DrawGroup::vertex_first, see draw_command.cc), so the
+     * buffer must be bound from 0 there — otherwise the slice start is applied twice and every
+     * per-material sub-range except the first draws the wrong triangles (M1: missing faces). */
+    wgpuRenderPassEncoderSetIndexBuffer(pass,
+                                        ibuf,
+                                        ibo->wgpu_index_format(),
+                                        indirect_buf != nullptr ? 0 : ibo->wgpu_index_offset_bytes(),
+                                        WGPU_WHOLE_SIZE);
   }
 
   if (expand_indexed) {
