@@ -80,8 +80,7 @@ Context::Context()
   matrix_state = GPU_matrix_state_create();
   texture_pool = GPUBackend::get()->texturepool_alloc();
 
-  context_id = Context::context_counter;
-  Context::context_counter++;
+  context_id = Context::context_counter++;
 }
 
 Context::~Context()
@@ -93,9 +92,10 @@ Context::~Context()
   BLI_assert(back_right == nullptr);
   BLI_assert(texture_pool == nullptr);
 
-  /** IMPORTANT: Do not free resources (texture, batch, buffers) in this function. These objects
-   * are likely to reference the GL/VK/MTLContext which is already destroyed at this point. */
-
+  /**
+   * IMPORTANT: Do not free resources (texture, batch, buffers) in this function. These objects
+   * are likely to reference the GL/VK/MTLContext which is already destroyed at this point.
+   */
   GPU_matrix_state_discard(matrix_state);
   delete state_manager;
   delete imm;
@@ -483,6 +483,13 @@ void GPU_vulkan_supported_devices_print(FILE *fp)
 
 bool GPU_backend_type_selection_detect()
 {
+  /* Only detect once, can't switch backend until Blender restart. */
+  static bool backend_type_detected = false;
+  if (backend_type_detected) {
+    return GPU_backend_type_selection_get() != GPU_BACKEND_NONE;
+  }
+  backend_type_detected = true;
+
   VectorSet<GPUBackendType> backends_to_check;
   if (g_backend_type_override.has_value()) {
     backends_to_check.add(*g_backend_type_override);
@@ -523,6 +530,11 @@ bool GPU_backend_type_selection_detect()
 
 static bool gpu_backend_supported()
 {
+  /* Skip the support check if "--debug-gpu-backend-no-fallback" is used. */
+  if (G.debug & G_DEBUG_GPU_BACKEND_NO_FALLBACK) {
+    return true;
+  }
+
   switch (g_backend_type) {
     case GPU_BACKEND_OPENGL:
 #ifdef WITH_OPENGL_BACKEND
@@ -699,6 +711,9 @@ GPUSecondaryContextData GPU_create_secondary_context()
   gpu_settings.context_type = ghost_context_type();
   if (G.debug & G_DEBUG_GPU) {
     gpu_settings.flags |= GHOST_gpuDebugContext;
+  }
+  if (G.debug & G_DEBUG_GPU_NO_HW_RAYTRACING) {
+    gpu_settings.flags |= GHOST_gpuNoHWRaytracing;
   }
   gpu_settings.preferred_device = GPU_backend_preferred_device_get();
 

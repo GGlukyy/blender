@@ -175,11 +175,15 @@ set(INC_SYS
 set(SRC
   ${BLENLIB_SRC}
   ${SRC_DNA_OTHER_INC}
+
+  # Needed by `rna_define.cc` for `UString` identifier storage.
+  ../../blenlib/intern/ustring.cc
 )
 
 set(LIB
   PRIVATE bf::intern::atomic
   PRIVATE bf::intern::guardedalloc
+  PRIVATE bf::dependencies::fmt
   PRIVATE bf::dependencies::optional::tbb
 )
 

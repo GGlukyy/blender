@@ -2,6 +2,10 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+/** \file
+ * \ingroup spseq
+ */
+
 #include "AS_asset_catalog.hh"
 #include "AS_asset_catalog_tree.hh"
 #include "AS_asset_library.hh"
@@ -104,7 +108,7 @@ static void catalog_assets_draw(const bContext *C, Menu *menu)
   wmOperatorType *ot = WM_operatortype_find("SEQUENCER_OT_strip_modifier_add_node_group", true);
   for (const asset_system::AssetRepresentation *asset : assets) {
     ensure_separator();
-    asset::draw_asset_menu_item(asset, ot->idname, layout);
+    asset::draw_asset_menu_item(asset, ot->idname, wm::OpCallContext::InvokeDefault, layout);
   }
 
   catalog_item->foreach_child([&](const asset_system::AssetCatalogTreeItem &item) {
@@ -137,7 +141,7 @@ static void unassigned_assets_draw(const bContext *C, Menu *menu)
   ui::Layout &layout = *menu->layout;
   wmOperatorType *ot = WM_operatortype_find("SEQUENCER_OT_strip_modifier_add_node_group", true);
   for (const asset_system::AssetRepresentation *asset : tree.unassigned_assets) {
-    asset::draw_asset_menu_item(asset, ot->idname, layout);
+    asset::draw_asset_menu_item(asset, ot->idname, wm::OpCallContext::InvokeDefault, layout);
   }
 
   bool first = true;
@@ -185,7 +189,7 @@ static void root_catalogs_draw(const bContext *C, Menu *menu)
     layout.separator();
 
     if (!loading_finished) {
-      layout.label(IFACE_("Loading Asset Libraries"), ICON_INFO);
+      layout.label(IFACE_("Loading Asset Libraries"), ICON_STATUS_INFO);
     }
 
     tree.catalogs.foreach_root_item([&](const asset_system::AssetCatalogTreeItem &item) {
@@ -240,6 +244,7 @@ static bNodeTree *get_node_group(const bContext &C, PointerRNA &ptr, ReportList 
 
 static wmOperatorStatus strip_modifier_add_asset_exec(bContext *C, wmOperator *op)
 {
+  Main &bmain = *CTX_data_main(C);
   Scene *scene = CTX_data_sequencer_scene(C);
   Strip *strip = seq::select_active_get(scene);
 
@@ -264,7 +269,7 @@ static wmOperatorStatus strip_modifier_add_asset_exec(bContext *C, wmOperator *o
 
   seq::modifier_persistent_uid_init(*strip, cmd->modifier);
 
-  seq::compositor_nodes_update_interface(*scene, *cmd);
+  seq::compositor_modifier_nodes_update_interface(bmain, *scene, *cmd);
 
   seq::relations_invalidate_cache(scene, strip);
   WM_event_add_notifier(C, NC_SCENE | ND_SEQUENCER, scene);

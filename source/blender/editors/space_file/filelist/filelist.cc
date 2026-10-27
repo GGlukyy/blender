@@ -200,7 +200,9 @@ static bool filelist_compare_asset_libraries(const AssetLibraryReference *librar
   return true;
 }
 
-void filelist_setlibrary(FileList *filelist, const AssetLibraryReference *asset_library_ref)
+void filelist_setlibrary(FileList *filelist,
+                         const AssetLibraryReference *asset_library_ref,
+                         FunctionRef<void()> on_change)
 {
   /* Unset if needed. */
   if (!asset_library_ref) {
@@ -211,15 +213,22 @@ void filelist_setlibrary(FileList *filelist, const AssetLibraryReference *asset_
     return;
   }
 
+  bool changed = false;
   if (!filelist->asset_library_ref) {
     filelist->asset_library_ref = MEM_new<AssetLibraryReference>("filelist asset library");
     *filelist->asset_library_ref = *asset_library_ref;
 
     filelist->flags |= FL_FORCE_RESET;
+    changed = true;
   }
   else if (!filelist_compare_asset_libraries(filelist->asset_library_ref, asset_library_ref)) {
     *filelist->asset_library_ref = *asset_library_ref;
     filelist->flags |= FL_FORCE_RESET;
+    changed = true;
+  }
+
+  if (changed && on_change) {
+    on_change();
   }
 }
 
@@ -366,7 +375,7 @@ static int filelist_geticon_file_type_ex(const FileList *filelist,
     }
 
     if (file->attributes & FILE_ATTR_OFFLINE) {
-      return ICON_ERROR;
+      return ICON_STATUS_ERROR;
     }
     if (file->attributes & FILE_ATTR_TEMPORARY) {
       return ICON_FILE_CACHE;
@@ -547,6 +556,10 @@ static int filelist_intern_free_main_files(FileList *filelist)
 static void filelist_cache_preview_runf(TaskPool *__restrict pool, void *taskdata)
 {
   FileListEntryCache *cache = static_cast<FileListEntryCache *>(BLI_task_pool_user_data(pool));
+  if (cache->previews_cancel_token.is_cancelled()) {
+    return;
+  }
+
   FileListEntryPreviewTaskData *preview_taskdata = static_cast<FileListEntryPreviewTaskData *>(
       taskdata);
   FileListEntryPreview *preview = preview_taskdata->preview;
@@ -583,8 +596,10 @@ static void filelist_cache_preview_runf(TaskPool *__restrict pool, void *taskdat
   IMB_thumb_path_lock(preview->filepath);
   /* Always generate biggest preview size for now, it's simpler and avoids having to re-generate
    * in case user switch to a bigger preview size. */
-  ImBuf *imbuf = IMB_thumb_manage(preview->filepath, THB_LARGE, source);
+  ImBuf *imbuf = IMB_thumb_manage(
+      preview->filepath, THB_LARGE, source, &cache->previews_cancel_token);
   IMB_thumb_path_unlock(preview->filepath);
+
   if (imbuf) {
     preview->icon_id = BKE_icon_imbuf_create(imbuf);
   }
@@ -624,7 +639,8 @@ static void filelist_cache_preview_ensure_running(FileListEntryCache *cache)
 static void filelist_cache_previews_clear(FileListEntryCache *cache)
 {
   if (cache->previews_pool) {
-    BLI_task_pool_cancel(cache->previews_pool);
+    cache->previews_cancel_token.cancel();
+    BLI_task_pool_work_and_wait(cache->previews_pool);
 
     for (FileDirEntry &entry : cache->cached_entries) {
       entry.flags &= ~FILE_ENTRY_PREVIEW_LOADING;
@@ -643,6 +659,7 @@ static void filelist_cache_previews_clear(FileListEntryCache *cache)
       MEM_delete(preview);
     }
     cache->previews_todo_count = 0;
+    cache->previews_cancel_token.reset();
   }
 }
 
@@ -1135,6 +1152,45 @@ void filelist_setrecursion(FileList *filelist, const int recursion_level)
   if (filelist->max_recursion != recursion_level) {
     filelist->max_recursion = recursion_level;
     filelist->flags |= FL_FORCE_RESET;
+  }
+}
+
+void filelist_entry_glob_tag(FileListInternEntry *entry, const char *filter_glob)
+{
+  entry->typeflag &= ~FILE_TYPE_OPERATOR;
+
+  if (entry->typeflag & (FILE_TYPE_DIR | FILE_TYPE_BLENDERLIB)) {
+    return;
+  }
+  if (filter_glob[0] == '\0') {
+    return;
+  }
+
+  /* Aliases & shortcuts match their target, its extension may differ from the link. */
+  const char *path = entry->redirection_path ? entry->redirection_path : entry->relpath;
+  if (BLI_path_extension_check_glob(path, filter_glob)) {
+    entry->typeflag |= FILE_TYPE_OPERATOR;
+  }
+}
+
+void filelist_reset_glob(FileList *filelist)
+{
+  for (FileListInternEntry &entry : filelist->filelist_intern.entries) {
+    filelist_entry_glob_tag(&entry, filelist->filter_glob);
+  }
+
+  filelist->flags &= ~FL_NEED_RESET_GLOB;
+}
+
+void filelist_setglob(FileList *filelist, const char *filter_glob)
+{
+  /* The glob is stored in #FileListInternEntry.typeflag, so filtering again isn't enough.
+   * Re-tag the entries, reading the directory again would be needlessly heavy. */
+
+  if (!STREQ(filelist->filter_glob, filter_glob)) {
+    STRNCPY(filelist->filter_glob, filter_glob);
+    filelist->flags |= FL_NEED_RESET_GLOB;
+    filelist_tag_needs_filtering(filelist);
   }
 }
 

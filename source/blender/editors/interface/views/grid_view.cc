@@ -321,9 +321,12 @@ void AbstractGridView::scroll_active_into_view(bContext *C, bool scroll_active_t
       int first_idx_in_view = visible_range.first();
       int last_idx_in_view = visible_range.last();
 
-      /* When button is slightly outside the view, clamp region to button's height, see: !159566 */
-      first_idx_in_view += rect.ymax > v2d.cur.ymax ? cols_per_row_ : 0;
-      last_idx_in_view -= rect.ymin < v2d.cur.ymin ? cols_per_row_ : 0;
+      if (but) {
+        /* When button is slightly outside the view, clamp region to button's height, see: !159566
+         */
+        first_idx_in_view += rect.ymax > v2d.cur.ymax ? cols_per_row_ : 0;
+        last_idx_in_view -= rect.ymin < v2d.cur.ymin ? cols_per_row_ : 0;
+      }
 
       const int view_height = BLI_rcti_size_y(&v2d.mask);
       const int count_rows_in_view = std::max(view_height / style_.tile_height, 1);
@@ -620,6 +623,10 @@ void GridViewBuilder::build_grid_view(const bContext &C,
   grid_view.update_from_old(block);
   grid_view.change_state_delayed();
   grid_view.filter(search_string);
+
+  if (grid_view.get_item_count_filtered() == 0) {
+    return;
+  }
 
   /* Ensure the given layout is actually active. */
   block_layout_set_current(&block, &layout);

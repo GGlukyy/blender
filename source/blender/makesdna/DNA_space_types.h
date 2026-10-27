@@ -53,6 +53,7 @@ class AssetRepresentation;
 
 /** Defined in `buttons_intern.hh`. */
 struct SpaceProperties_Runtime;
+struct SpaceConsole_Runtime;
 
 namespace ed::space_node {
 struct SpaceNode_Runtime;
@@ -211,6 +212,8 @@ struct SpaceOutliner {
   eSpaceOutliner_StateFilter filter_state = SO_FILTER_OB_ALL;
   eSpaceOutliner_ShowRestrictFlag show_restrict_flags = {};
   short filter_id_type = 0;
+  eSpaceOutliner_SortMethod sort_method = SO_SORT_CUSTOM;
+  char _pad1[6] = {};
 
   ed::outliner::SpaceOutliner_Runtime *runtime = nullptr;
 };
@@ -729,7 +732,7 @@ struct SpaceText {
   eSpaceText_Flags flags = {};
 
   /** User preference, is font_size! */
-  short lheight = 0;
+  short line_height = 0;
 
   int tabnumber = 0;
 
@@ -948,7 +951,7 @@ struct SpaceConsole {
   /** Multiple consoles are possible, not just python. */
   char language[32] = "";
 
-  int lheight = 0;
+  int line_height = 0;
 
   /** Index into history of most recent up/down arrow keys. */
   int history_index = 0;
@@ -956,6 +959,9 @@ struct SpaceConsole {
   /** Selection offset in bytes. */
   int sel_start = 0;
   int sel_end = 0;
+
+  /** Keep last. */
+  SpaceConsole_Runtime *runtime = nullptr;
 };
 
 /** \} */

@@ -2,6 +2,10 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+/** \file
+ * \ingroup gpu
+ */
+
 #pragma once
 
 #include "BLI_map.hh"
@@ -83,10 +87,10 @@
  *  Usage:
  *    MTLContext::get_global_memory_manager();  - static routine to fetch global memory manager.
  *
- *    gpu::MTLBuffer *allocate(size, is_cpu_visibile)
- *    gpu::MTLBuffer *allocate_aligned(size, alignment, is_cpu_visibile)
- *    gpu::MTLBuffer *allocate_with_data(size, is_cpu_visibile, data_ptr)
- *    gpu::MTLBuffer *allocate_aligned_with_data(size, alignment, is_cpu_visibile, data_ptr)
+ *    gpu::MTLBuffer *allocate(size, is_cpu_visible)
+ *    gpu::MTLBuffer *allocate_aligned(size, alignment, is_cpu_visible)
+ *    gpu::MTLBuffer *allocate_with_data(size, is_cpu_visible, data_ptr)
+ *    gpu::MTLBuffer *allocate_aligned_with_data(size, alignment, is_cpu_visible, data_ptr)
  */
 
 /* Debug memory statistics: Disabled by Macro rather than guarded for

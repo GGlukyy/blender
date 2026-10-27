@@ -266,6 +266,17 @@ struct bNodeLinkDrag {
   ui::View2DEdgePanData pan_data;
 };
 
+struct NodeInsertOfsData {
+  bNodeTree *ntree = nullptr;
+  /** Inserted node. */
+  bNode *insert = nullptr;
+  /** Previous/next node in the chain. */
+  bNode *prev = nullptr;
+  bNode *next = nullptr;
+
+  wmTimer *anim_timer = nullptr;
+};
+
 struct SpaceNode_Runtime {
   float aspect;
 
@@ -279,7 +290,7 @@ struct SpaceNode_Runtime {
 
   /* XXX hack for translate_attach op-macros to pass data from transform op to insert_offset op */
   /** Temporary data for node insert offset (in UI called Auto-offset). */
-  NodeInsertOfsData *iofsd;
+  std::unique_ptr<NodeInsertOfsData> iofsd;
 
   /**
    * Use this to store data for the displayed node tree. It has an entry for every distinct
@@ -488,7 +499,6 @@ void NODE_OT_add_import_node(wmOperatorType *ot);
 void NODE_OT_swap_group_asset(wmOperatorType *ot);
 void NODE_OT_new_node_tree(wmOperatorType *ot);
 void NODE_OT_new_compositing_node_group(wmOperatorType *ot);
-void NODE_OT_duplicate_compositing_node_group(wmOperatorType *ot);
 void NODE_OT_duplicate_compositing_modifier_node_group(wmOperatorType *ot);
 void NODE_OT_new_compositor_sequencer_node_group(wmOperatorType *operator_type);
 void NODE_OT_add_group_input_node(wmOperatorType *ot);
@@ -562,6 +572,7 @@ void NODE_OT_delete_reconnect(wmOperatorType *ot);
 void NODE_OT_resize(wmOperatorType *ot);
 
 void NODE_OT_mute_toggle(wmOperatorType *ot);
+void NODE_OT_comment_edit(wmOperatorType *ot);
 void NODE_OT_collapse_toggle(wmOperatorType *ot);
 void NODE_OT_hide_socket_toggle(wmOperatorType *ot);
 void NODE_OT_preview_toggle(wmOperatorType *ot);
@@ -598,6 +609,9 @@ void NODE_GGT_backdrop_corner_pin(wmGizmoGroupType *gzgt);
 void NODE_GGT_backdrop_box_mask(wmGizmoGroupType *gzgt);
 void NODE_GGT_backdrop_ellipse_mask(wmGizmoGroupType *gzgt);
 void NODE_GGT_backdrop_split(wmGizmoGroupType *gzgt);
+void NODE_GGT_compositor_translate(wmGizmoGroupType *gzgt);
+void NODE_GGT_compositor_transform(wmGizmoGroupType *gzgt);
+void NODE_GGT_compositor_scale(wmGizmoGroupType *gzgt);
 
 /* `node_geometry_attribute_search.cc` */
 

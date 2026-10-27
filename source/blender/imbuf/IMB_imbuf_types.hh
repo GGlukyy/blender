@@ -20,6 +20,7 @@
 #include "DNA_image_enums.h"
 #include "IMB_imbuf_enums.h"
 
+#include <atomic>
 #include <string>
 
 namespace blender {
@@ -28,6 +29,14 @@ namespace gpu {
 class Texture;
 }
 struct IDProperty;
+
+namespace imbuf::partial_update {
+struct Tracker;
+}
+
+namespace imbuf {
+using ChangesetID = int64_t;
+}
 
 namespace ocio {
 class ColorSpace;
@@ -118,13 +127,11 @@ struct ImBufFloatBuffer {
 };
 
 enum ImBufGPUFlag : int {
-  /** Mipmap chain has been generated for the GPU texture. */
-  IMB_GPU_MIPMAP_COMPLETE = (1 << 0),
-  /** Disable mipmap updates, primarily used for texture painting. */
-  IMB_GPU_DISABLE_MIPMAP_UPDATE = (1 << 1),
-  /** GPU texture failed to be loaded onto the GPU, to distinguish a null
-   * texture between not yet loaded and failed to load. */
-  IMB_GPU_LOAD_FAILED = (1 << 2),
+  /**
+   * GPU texture failed to be loaded onto the GPU, to distinguish a null
+   * texture between not yet loaded and failed to load.
+   */
+  IMB_GPU_LOAD_FAILED = (1 << 0),
 };
 ENUM_OPERATORS(ImBufGPUFlag)
 
@@ -137,14 +144,19 @@ struct ImBufGPU {
    *
    * TODO(@sergey): This should become a list of textures, to support having high-res ImBuf on GPU
    * without hitting hardware limitations.
+   *
+   * Atomic because partial update tracking reads this without holding a lock.
    */
-  gpu::Texture *texture = nullptr;
+  std::atomic<gpu::Texture *> texture = nullptr;
 
   /** Last used timestamp for garbage collection */
   int64_t lastused = 0;
 
   /** GPU buffer flags. */
   ImBufGPUFlag flag = ImBufGPUFlag(0);
+
+  /** Changeset tracking for partial update. */
+  std::atomic<imbuf::ChangesetID> partial_update_changeset_id = -1;
 
   /** Mutex guarding access to #texture, #lastused, and #flag. */
   blender::Mutex mutex;
@@ -158,10 +170,14 @@ struct ImBufGPU {
 
 struct ImBuf {
   /* dimensions */
-  /** Width and Height of our image buffer.
-   * Should be 'unsigned int' since most formats use this.
-   * but this is problematic with texture math in `imagetexture.c`
-   * avoid problems and use int. - campbell */
+  /**
+   * Width and Height of our image buffer.
+   *
+   * Should be 'unsigned int' since most formats use this, but this is problematic with texture
+   * math in `imagetexture.c`. Avoid this by using 'int'. - campbell
+   *
+   * \see Prefer #IMB_get_pixel_count over (x * y) to avoid integer overflow for very large images.
+   */
   int x = 0;
   int y = 0;
 
@@ -217,6 +233,15 @@ struct ImBuf {
   /** Image buffer on the GPU. */
   ImBufGPU gpu;
 
+  /** Partial update tracking for GPU textures and image drawing. */
+  imbuf::partial_update::Tracker *partial_update = nullptr;
+  Mutex partial_update_mutex;
+
+  /** Unique changeset ID of the last full update, to track when the undo
+   * system needs to assume the whole image buffer has changed and no partial
+   * undo is possible. */
+  std::atomic<imbuf::ChangesetID> full_update_changeset_id = -1;
+
   /** Resolution in pixels per meter. Multiply by `0.0254` for DPI. */
   double ppm[2] = {0.0, 0.0};
 
@@ -267,6 +292,9 @@ struct ImBuf {
 
   [[nodiscard]] bool colorspace_is_data() const;
 
+  [[nodiscard]] const ColorSpace &byte_colorspace() const;
+  [[nodiscard]] const ColorSpace &float_colorspace() const;
+
   [[nodiscard]] bool can_contain_alpha() const
   {
     return color_mode == ImColorMode::RGBA || color_mode == ImColorMode::BW_A;
@@ -301,15 +329,13 @@ struct ImBuf {
 enum {
   /** image needs to be saved is not the same as filename */
   IB_BITMAPDIRTY = (1 << 1),
-  /** float buffer changed, needs recreation of byte rect */
-  IB_RECT_INVALID = (1 << 3),
-  /** either float or byte buffer changed */
-  IB_DISPLAY_BUFFER_INVALID = (1 << 4),
   /** image buffer is persistent in the memory and should never be removed from the cache */
-  IB_PERSISTENT = (1 << 5),
-  /** The image buffer is backed by a GPU texture storage but the host buffers either do not exist
-   * or are out-dated and needs to read from the GPU texture. */
-  IB_HOST_BUFFER_INVALID = (1 << 6),
+  IB_PERSISTENT = (1 << 2),
+  /**
+   * The image buffer is backed by a GPU texture storage but the host buffers either do not exist
+   * or are out-dated and needs to read from the GPU texture.
+   */
+  IB_HOST_BUFFER_INVALID = (1 << 3),
 };
 
 /** \} */

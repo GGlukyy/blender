@@ -45,8 +45,8 @@ TEST_F(SocketValueVisitorTest, edit_in_nested_mesh)
   nodes::GListPtr list_ptr = nodes::GList::from_container(std::move(geometry_set_list));
   nodes::BundlePtr bundle_ptr = nodes::Bundle::create();
   bundle_ptr.ensure_mutable_inplace().add(*nodes::BundleKey::from_str("test"),
-                                          SocketValueVariant::From(std::move(list_ptr)));
-  SocketValueVariant value = SocketValueVariant::From(std::move(bundle_ptr));
+                                          SocketValueVariant::from(std::move(list_ptr)));
+  SocketValueVariant value = SocketValueVariant::from(std::move(bundle_ptr));
 
   auto attributes_need_edit = [&](const AttributeAccessor & /*attributes*/) { return true; };
   auto edit_attributes = [&](MutableAttributeAccessor &attributes) {
@@ -59,6 +59,18 @@ TEST_F(SocketValueVisitorTest, edit_in_nested_mesh)
   edit_recursive(value, params);
 
   EXPECT_TRUE(mesh->attributes().contains("my attribute"));
+}
+
+TEST_F(SocketValueVisitorTest, empty_bundle_list_owns_direct_data)
+{
+  const CPPType &type = CPPType::get<nodes::BundlePtr>();
+  nodes::GListPtr list = nodes::GList::create(
+      type, nodes::GList::SingleData::ForDefaultValue(type), 0);
+  SocketValueVariant value = SocketValueVariant::from(std::move(list));
+
+  EXPECT_TRUE(value.owns_direct_data());
+  value.ensure_owns_direct_data();
+  EXPECT_TRUE(value.owns_direct_data());
 }
 
 }  // namespace blender::bke::socket_value_visitor::tests

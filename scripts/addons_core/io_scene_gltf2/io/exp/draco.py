@@ -21,7 +21,10 @@ def encode_scene_primitives(scenes, export_settings):
         raise RuntimeError("Draco compression is not available in the web build")
 
     # Load DLL and setup function signatures.
-    dll = cdll.LoadLibrary(str(dll_path('bf_intern_draco_bridge', 'Draco').resolve()))
+    path = dll_path('bf_intern_draco_bridge', 'Draco')
+    if path is None:
+        raise RuntimeError("Draco encoder library not found")
+    dll = cdll.LoadLibrary(str(path.resolve()))
 
     dll.encoderCreate.restype = c_void_p
     dll.encoderCreate.argtypes = [c_uint32]

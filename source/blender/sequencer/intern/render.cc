@@ -19,12 +19,14 @@
 #include "BLI_listbase.hh"
 #include "BLI_math_geom_c.hh"
 #include "BLI_math_matrix.hh"
+#include "BLI_math_vector.hh"
 #include "BLI_path_utils.hh"
 #include "BLI_rect.hh"
 #include "BLI_task.hh"
 
 #include "BKE_anim_data.hh"
-#include "BKE_animsys.h"
+#include "BKE_animsys.hh"
+#include "BKE_compositor.hh"
 #include "BKE_global.hh"
 #include "BKE_image.hh"
 #include "BKE_layer.hh"
@@ -64,6 +66,7 @@
 #include "SEQ_relations.hh"
 #include "SEQ_render.hh"
 #include "SEQ_sequencer.hh"
+#include "SEQ_thumbnail_cache.hh"
 #include "SEQ_time.hh"
 #include "SEQ_transform.hh"
 #include "SEQ_utils.hh"
@@ -72,6 +75,7 @@
 
 #include "cache/final_image_cache.hh"
 #include "cache/intra_frame_cache.hh"
+#include "cache/movie_reader_cache.hh"
 #include "cache/source_image_cache.hh"
 #include "effects/effects.hh"
 #include "intern/movie_read.hh"
@@ -83,6 +87,7 @@
 #include "utils.hh"
 
 #include <algorithm>
+#include <utility>
 
 namespace blender::seq {
 
@@ -100,16 +105,14 @@ DrawViewFn view3d_fn = nullptr; /* nullptr in background mode */
 /** \name Color-space utility functions
  * \{ */
 
-void seq_imbuf_assign_spaces(const Scene *scene, ImBuf *ibuf)
+void seq_imbuf_assign_sequencer_space(const Scene *scene, ImBuf *ibuf)
 {
-#if 0
-  /* Byte buffer is supposed to be in sequencer working space already. */
-  if (ibuf->rect != nullptr) {
-    IMB_colormanagement_assign_byte_colorspace(ibuf, scene->sequencer_colorspace_settings.name);
-  }
-#endif
+  const char *name = scene->sequencer_colorspace_settings.name;
   if (ibuf->float_data() != nullptr) {
-    IMB_colormanagement_assign_float_colorspace(ibuf, scene->sequencer_colorspace_settings.name);
+    IMB_colormanagement_assign_float_colorspace(ibuf, name);
+  }
+  if (ibuf->byte_data() != nullptr) {
+    IMB_colormanagement_assign_byte_colorspace(ibuf, name);
   }
 }
 
@@ -153,16 +156,13 @@ static void ensure_ibuf_is_color_space(ImBuf *ibuf, bool make_float, const char 
     if (ibuf->byte_data() != nullptr) {
       IMB_free_byte_pixels(ibuf);
     }
-    /* Note: we do not use predivide to more closely match what
-     * compositor does, and to better preserve cases of pure emissive
-     * colors (alpha=0, RGB non black). */
     IMB_colormanagement_transform_float(ibuf->float_data_for_write(),
                                         ibuf->x,
                                         ibuf->y,
                                         ibuf->channels,
                                         from_colorspace,
                                         to_colorspace,
-                                        false);
+                                        true);
     IMB_colormanagement_assign_float_colorspace(ibuf, to_colorspace);
   }
 }
@@ -372,7 +372,7 @@ static bool seq_input_have_to_preprocess(const Strip *strip)
     return true;
   }
 
-  if (strip->modifiers.first) {
+  if (strip->modifiers.first_) {
     return true;
   }
 
@@ -380,8 +380,8 @@ static bool seq_input_have_to_preprocess(const Strip *strip)
 }
 
 /**
- * Effect (except color), mask and scene in strip input strips are rendered in preview resolution.
- * They are already down-scaled. #input_preprocess() does not expect this to happen.
+ * Effect (except color), mask, meta, and sequencer-input scene strips are rendered in the preview
+ * resolution. They are already down-scaled. #input_preprocess() does not expect this to happen.
  * Other strip types are rendered with original media resolution, unless proxies are
  * enabled for them. With proxies `is_proxy_image` will be set correctly to true.
  */
@@ -399,35 +399,58 @@ static bool seq_need_scale_to_render_size(const Strip *strip, bool is_proxy_imag
   return true;
 }
 
+/**
+ * Get the matrix that maps some input image of size `in_size` to an output canvas of `out_size`,
+ * with the strip's scale, rotate, and position properly applied.
+ *
+ * Some strips have already been scaled down:
+ * - Strips with proxies enabled and built currently keep their chosen proxy size in sync with the
+ *   preview resolution (which ideally should be split in the future for clarity). In this case, or
+ *   if #seq_need_scale_to_render_size is false, `image_scale_factor` is kept at 1.
+ * - Otherwise, `image_scale_factor` should be the same as `preview_scale_factor`, which
+ *   is some percentage of full render resolution. Note that this parameter is always present, even
+ *   in final renders (which use "Scene Size"), where it is equal to the % / "Resolution Scale".
+ *
+ * After scaling down strips, we need to adjust the strip's translation, which refers to full
+ * render resolution pixels; we do this with `preview_scale_factor`.
+ */
 static float3x3 calc_strip_transform_matrix(const Scene *scene,
                                             const Strip *strip,
-                                            const int in_x,
-                                            const int in_y,
-                                            const int out_x,
-                                            const int out_y,
+                                            const int2 in_size,
+                                            const int2 out_size,
                                             const float image_scale_factor,
                                             const float preview_scale_factor)
 {
+  /* Step 1: Convert image coordinates from (0,0) bottom-left to (0,0) image center. */
+  const float3x3 center_image = math::from_location<float3x3>(-float2(in_size) / 2.0f);
+
+  /* Step 2: Resize image about its center if needed. */
+  const float3x3 resize = math::from_scale<float3x3>(float2(image_scale_factor));
+
+  /* Step 3: Apply user scale/rotate/translate about the remapped origin. */
   const StripTransform *transform = strip->data->transform;
-
-  /* This value is intentionally kept as integer. Otherwise images with odd dimensions would
-   * be translated to center of canvas by non-integer value, which would cause it to be
-   * interpolated. Interpolation with 0 user defined translation is unwanted behavior. */
-  const int3 image_center_offs((out_x - in_x) / 2, (out_y - in_y) / 2, 0);
-
+  const float2 origin_mapped = math::transform_point(
+      resize * center_image, float2(in_size) * image_transform_origin_get(scene, strip));
   const float2 translation(transform->xofs * preview_scale_factor,
                            transform->yofs * preview_scale_factor);
   const float rotation = transform->rotation;
-  const float2 scale(transform->scale_x * image_scale_factor,
-                     transform->scale_y * image_scale_factor);
+  const float2 scale(transform->scale_x, transform->scale_y);
 
-  const float2 origin = image_transform_origin_get(scene, strip);
-  const float2 pivot(in_x * origin[0], in_y * origin[1]);
+  const float3x3 user_transforms = math::from_origin_transform(
+      math::from_loc_rot_scale<float3x3>(translation, rotation, scale), origin_mapped);
 
-  const float3x3 matrix = math::from_loc_rot_scale<float3x3>(
-      translation + float2(image_center_offs), rotation, scale);
-  const float3x3 mat_pivot = math::from_origin_transform(matrix, pivot);
-  return mat_pivot;
+  /* Step 4: Map input image center to output canvas center, where (0,0) is canvas bottom-left. */
+  /* TODO(@john): Existing tests expect no interpolation of untransformed images that cannot
+   * cleanly center themselves in the canvas. However, this is arguably incorrect as it results in
+   * positional error (de-centering). Uncomment this line for future PR that updates tests, and for
+   * now, use a workaround that should pixel-perfect reproduce old behavior.  */
+
+  /* const float3x3 center_in_canvas = math::from_location<float3x3>(float2(out_size) / 2.0f); */
+  const float3x3 center_in_canvas = math::from_location<float3x3>(
+      float2(in_size) / 2.0f + float2((out_size - in_size) / 2));
+
+  /* Apply all the steps from right to left as matrix multiplication. */
+  return center_in_canvas * user_transforms * resize * center_image;
 }
 
 static void sequencer_image_crop_init(const Strip *strip,
@@ -442,6 +465,39 @@ static void sequencer_image_crop_init(const Strip *strip,
   const int bottom = c->bottom * crop_scale_factor;
 
   BLI_rctf_init(r_crop, left, in->x - right, bottom, in->y - top);
+}
+
+/* Check bounds used by strip occlusion against the actual cropped and transformed image. */
+static bool strip_result_covers_strip_quad(const RenderData *context,
+                                           const Strip *strip,
+                                           const ImBuf *image,
+                                           const float3x3 &matrix,
+                                           const float crop_scale_factor)
+{
+  rctf crop;
+  sequencer_image_crop_init(strip, image, crop_scale_factor, &crop);
+  const rctf image_bounds{0.0f, float(image->x), 0.0f, float(image->y)};
+  BLI_rctf_isect(&crop, &image_bounds, &crop);
+  if (BLI_rctf_is_empty(&crop)) {
+    return false;
+  }
+
+  const float2 center(context->rectx * 0.5f, context->recty * 0.5f);
+  const float2 display_scale = image_transform_mirror_factor_get(strip) *
+                               float2(context->scene->r.xasp / context->scene->r.yasp, 1.0f);
+  const auto to_screen = [&](const float2 point) {
+    return (math::transform_point(matrix, point) - center) * display_scale + center;
+  };
+  const StripScreenQuad actual_quad{to_screen(float2(crop.xmin, crop.ymin)),
+                                    to_screen(float2(crop.xmax, crop.ymin)),
+                                    to_screen(float2(crop.xmax, crop.ymax)),
+                                    to_screen(float2(crop.xmin, crop.ymax))};
+  if (math::cross(actual_quad.v1 - actual_quad.v0, actual_quad.v3 - actual_quad.v0) == 0.0f) {
+    /* Zero area quad. */
+    return false;
+  }
+  const StripScreenQuad strip_quad = get_strip_screen_quad(context, strip);
+  return !strip_quad.is_empty() && is_quad_a_inside_b(strip_quad, actual_quad);
 }
 
 static bool is_strip_covering_screen(const RenderData *context, const Strip *strip)
@@ -642,32 +698,49 @@ static SeqResult input_preprocess(const RenderData *context,
   const bool do_scale_to_render_size = seq_need_scale_to_render_size(strip, is_proxy_image);
   const float image_scale_factor = do_scale_to_render_size ? preview_scale_factor : 1.0f;
 
-  if (strip->modifiers.first) {
+  if (strip->modifiers.first_) {
     result.image = IMB_makeSingleUser(result.image);
     float3x3 matrix = calc_strip_transform_matrix(scene,
                                                   strip,
-                                                  result.image->x,
-                                                  result.image->y,
-                                                  context->rectx,
-                                                  context->recty,
+                                                  int2(result.image->x, result.image->y),
+                                                  int2(context->rectx, context->recty),
                                                   image_scale_factor,
                                                   preview_scale_factor);
     float3x3 matrix_comp = calc_strip_transform_matrix(
-        scene, strip, 0, 0, 0, 0, image_scale_factor, preview_scale_factor);
+        scene, strip, int2(0), int2(0), image_scale_factor, preview_scale_factor);
     matrix_comp = math::invert(matrix_comp);
     ModifierApplyContext mod_context(
         *context, *state, *strip, matrix, matrix_comp, timeline_frame, result);
     modifier_apply_stack(mod_context);
   }
 
-  /* After everything above is done but before transform is applied,
-   * remember whether the image was opaque. */
-  result.is_opaque_before_transform = !result.image->can_contain_alpha();
+  const bool do_transform = sequencer_use_crop(strip) || sequencer_use_transform(strip) ||
+                            context->rectx != result.image->x ||
+                            context->recty != result.image->y ||
+                            (strip->is_effect() && image_scale_factor != 1.0f) ||
+                            result.translation != float2(0, 0);
+  /* Modifiers can change image dimensions and translation. Use the final transform for both
+   * coverage validation and image processing, including preview/proxy scaling and centering. */
+  const float3x3 matrix = do_transform ?
+                              calc_strip_transform_matrix(scene,
+                                                          strip,
+                                                          int2(result.image->x, result.image->y),
+                                                          int2(context->rectx, context->recty),
+                                                          image_scale_factor,
+                                                          preview_scale_factor) *
+                                  math::from_location<float3x3>(result.translation) :
+                              float3x3::identity();
 
-  if (sequencer_use_crop(strip) || sequencer_use_transform(strip) ||
-      context->rectx != result.image->x || context->recty != result.image->y ||
-      (strip->is_effect() && image_scale_factor != 1.0f) || result.translation != float2(0, 0))
-  {
+  /* Only use opaque source content as an occluder if it covers the assumed strip bounds. */
+  result.is_opaque_before_transform = !result.image->can_contain_alpha() &&
+                                      strip_result_covers_strip_quad(
+                                          context,
+                                          strip,
+                                          result.image,
+                                          matrix,
+                                          do_scale_to_render_size ? 1.0f : preview_scale_factor);
+
+  if (do_transform) {
     PRF_scope_with_name("SeqStripTransform", ProfileCategory::Draw);
 
     const int x = context->rectx;
@@ -675,24 +748,16 @@ static SeqResult input_preprocess(const RenderData *context,
     ImBuf *transformed_ibuf = IMB_allocImBuf(
         x, y, result.image->float_data() ? ImBufFlags::FloatData : ImBufFlags::ByteData);
 
-    /* Note: calculate matrix again; modifiers can actually change the image size. */
-    float3x3 matrix = calc_strip_transform_matrix(scene,
-                                                  strip,
-                                                  result.image->x,
-                                                  result.image->y,
-                                                  context->rectx,
-                                                  context->recty,
-                                                  image_scale_factor,
-                                                  preview_scale_factor);
-    matrix *= math::from_location<float3x3>(result.translation);
-    matrix = math::invert(matrix);
     sequencer_preprocess_transform_crop(result.image,
                                         transformed_ibuf,
                                         context,
                                         strip,
-                                        matrix,
+                                        math::invert(matrix),
                                         !do_scale_to_render_size,
                                         preview_scale_factor);
+    if (!result.is_opaque_before_transform) {
+      transformed_ibuf->color_mode = ImColorMode::RGBA;
+    }
     transformed_ibuf->byte_buffer.colorspace = result.image->byte_buffer.colorspace;
     transformed_ibuf->float_buffer.colorspace = result.image->float_buffer.colorspace;
     IMB_metadata_copy(transformed_ibuf, result.image);
@@ -766,7 +831,7 @@ static SeqResult seq_render_effect_strip_impl(const RenderData *context,
     return out;
   }
 
-  float fac = effect_fader_calc(scene, strip, timeline_frame);
+  float fac = effect_fader_calc(scene, strip, timeline_frame, state->is_current_frame);
 
   StripEarlyOut early_out = sh.early_out(strip, fac);
 
@@ -855,12 +920,8 @@ void ensure_ibuf_is_rgba(ImBuf *ibuf)
 /**
  * Render individual view for multi-view or single (default view) for mono-view.
  */
-static ImBuf *seq_render_image_strip_view(const RenderData *context,
-                                          Strip *strip,
-                                          char *filepath,
-                                          char *prefix,
-                                          const char *ext,
-                                          int view_id)
+static ImBuf *seq_render_image_strip_view(
+    const RenderData *context, Strip *strip, const char *filepath, const char *prefix, int view_id)
 {
   ImBuf *ibuf = nullptr;
 
@@ -870,14 +931,16 @@ static ImBuf *seq_render_image_strip_view(const RenderData *context,
   }
 
   if (prefix[0] == '\0') {
-    ibuf = IMB_load_image_from_filepath(filepath, flag, strip->data->colorspace_settings.name);
+    ibuf = IMB_load_image_from_filepath(filepath, flag, &strip->data->colorspace_settings);
   }
   else {
     char filepath_view[FILE_MAX];
-    BKE_scene_multiview_view_prefix_get(context->scene, filepath, prefix, &ext);
-    seq_multiview_name(context->scene, view_id, prefix, ext, filepath_view, FILE_MAX);
-    ibuf = IMB_load_image_from_filepath(
-        filepath_view, flag, strip->data->colorspace_settings.name);
+    if (!seq_multiview_view_filepath_get(
+            *context->scene, filepath, view_id, filepath_view, sizeof(filepath_view), nullptr))
+    {
+      return nullptr;
+    }
+    ibuf = IMB_load_image_from_filepath(filepath_view, flag, &strip->data->colorspace_settings);
   }
 
   if (ibuf == nullptr) {
@@ -893,24 +956,29 @@ static ImBuf *seq_render_image_strip_view(const RenderData *context,
   return ibuf;
 }
 
-bool seq_image_strip_is_multiview_render(const Scene *scene,
-                                         const Strip *strip,
-                                         int totfiles,
-                                         const char *filepath,
-                                         char *r_prefix,
-                                         const char *r_ext)
+bool seq_strip_do_multiview_render(const Scene *scene,
+                                   const Strip *strip,
+                                   const char *filepath,
+                                   char *r_prefix)
 {
-  if (totfiles > 1) {
-    BKE_scene_multiview_view_prefix_get(scene, filepath, r_prefix, &r_ext);
-    if (r_prefix[0] == '\0') {
-      return false;
-    }
-  }
-  else {
-    r_prefix[0] = '\0';
+  r_prefix[0] = '\0';
+
+  if ((strip->flag & SEQ_USE_VIEWS) == 0 || (scene->r.scemode & R_MULTIVIEW) == 0 ||
+      BKE_scene_multiview_num_views_get(&scene->r) <= 1)
+  {
+    return false;
   }
 
-  return (strip->flag & SEQ_USE_VIEWS) != 0 && (scene->r.scemode & R_MULTIVIEW) != 0;
+  if (strip->views_format != R_IMF_VIEWS_INDIVIDUAL) {
+    /* Strips interpreted as a single stereo file always force multiview. */
+    return true;
+  }
+
+  /* For "Individual" view, if strip's file suffix does not match any view suffix,
+   * (implying no common prefix), fallback to mono render. */
+  const char *ext = nullptr;
+  BKE_scene_multiview_view_prefix_get(scene, filepath, r_prefix, &ext);
+  return r_prefix[0] != '\0';
 }
 
 static ImBuf *create_missing_media_image(const RenderData *context, int width, int height)
@@ -938,7 +1006,6 @@ static ImBuf *seq_render_image_strip(const RenderData *context,
   PRF_scope_with_name("SeqRenderImage", ProfileCategory::Draw);
 
   char filepath[FILE_MAX];
-  const char *ext = nullptr;
   char prefix[FILE_MAX];
   ImBuf *ibuf = nullptr;
 
@@ -958,17 +1025,16 @@ static ImBuf *seq_render_image_strip(const RenderData *context,
   }
 
   /* Proxy not found, render original. */
-  const int totfiles = seq_num_files(context->scene, strip->views_format, true);
-  bool is_multiview_render = seq_image_strip_is_multiview_render(
-      context->scene, strip, totfiles, filepath, prefix, ext);
+  const bool do_multiview_render = seq_strip_do_multiview_render(
+      context->scene, strip, filepath, prefix);
 
-  if (is_multiview_render) {
-    int totviews = BKE_scene_multiview_num_views_get(&context->scene->r);
+  if (do_multiview_render) {
+    const int totfiles = seq_multiview_num_files_get(context->scene, strip->views_format);
+    const int totviews = BKE_scene_multiview_num_views_get(&context->scene->r);
     Array<ImBuf *> ibufs_arr(totviews, nullptr);
 
     for (int view_id = 0; view_id < totfiles; view_id++) {
-      ibufs_arr[view_id] = seq_render_image_strip_view(
-          context, strip, filepath, prefix, ext, view_id);
+      ibufs_arr[view_id] = seq_render_image_strip_view(context, strip, filepath, prefix, view_id);
     }
 
     if (ibufs_arr[0] == nullptr) {
@@ -991,7 +1057,7 @@ static ImBuf *seq_render_image_strip(const RenderData *context,
     }
   }
   else {
-    ibuf = seq_render_image_strip_view(context, strip, filepath, prefix, ext, context->view_id);
+    ibuf = seq_render_image_strip_view(context, strip, filepath, prefix, context->view_id);
   }
 
   media_presence_set_missing(context->scene, strip, ibuf == nullptr);
@@ -1017,7 +1083,7 @@ static ImBuf *seq_render_movie_strip_custom_file_proxy(const RenderData *context
       /* Sequencer takes care of colorspace conversion of the result. The input is the best to be
        * kept unchanged for the performance reasons. */
       proxy->anim = openanim(
-          filepath, ImBufFlags::Zero, 0, true, strip->data->colorspace_settings.name);
+          filepath, ImBufFlags::Zero, 0, true, &strip->data->colorspace_settings);
     }
     if (proxy->anim == nullptr) {
       return nullptr;
@@ -1035,7 +1101,7 @@ static ImBuf *seq_render_movie_strip_custom_file_proxy(const RenderData *context
 static ImBuf *seq_render_movie_strip_view(const RenderData *context,
                                           Strip *strip,
                                           float timeline_frame,
-                                          MovieReader *reader,
+                                          MovieReaderAccessor &reader,
                                           bool *r_is_proxy_image)
 {
   ImBuf *ibuf = nullptr;
@@ -1051,7 +1117,7 @@ static ImBuf *seq_render_movie_strip_view(const RenderData *context,
       ibuf = seq_render_movie_strip_custom_file_proxy(context, strip, timeline_frame);
     }
     else {
-      ibuf = MOV_decode_frame(reader, frame_index + strip->anim_startofs, psize);
+      ibuf = reader.decode_frame(frame_index + strip->anim_startofs, psize);
     }
 
     if (ibuf != nullptr) {
@@ -1061,7 +1127,7 @@ static ImBuf *seq_render_movie_strip_view(const RenderData *context,
 
   /* Fetching for requested proxy size failed, try fetching the original instead. */
   if (ibuf == nullptr) {
-    ibuf = MOV_decode_frame(reader, frame_index + strip->anim_startofs, IMB_PROXY_NONE);
+    ibuf = reader.decode_frame(frame_index + strip->anim_startofs, IMB_PROXY_NONE);
   }
   if (ibuf == nullptr) {
     return nullptr;
@@ -1082,27 +1148,60 @@ static ImBuf *seq_render_movie_strip(const RenderData *context,
 {
   PRF_scope_with_name("SeqRenderMovie", ProfileCategory::Draw);
 
-  /* Load all the videos. */
-  strip_open_anim_file(context->scene, strip, false);
-
   ImBuf *ibuf = nullptr;
-  MovieReader *first_reader = strip->runtime->movie_reader_get();
-  const int totfiles = seq_num_files(context->scene, strip->views_format, true);
-  bool is_multiview_render = (strip->flag & SEQ_USE_VIEWS) != 0 &&
-                             (context->scene->r.scemode & R_MULTIVIEW) != 0 &&
-                             totfiles == strip->runtime->movie_readers.size();
+  const bool use_multiview = (strip->flag & SEQ_USE_VIEWS) != 0 &&
+                             (context->scene->r.scemode & R_MULTIVIEW) != 0;
+  const int totfiles = use_multiview ?
+                           seq_multiview_num_files_get(context->scene, strip->views_format) :
+                           1;
 
-  if (is_multiview_render) {
-    int totviews = BKE_scene_multiview_num_views_get(&context->scene->r);
+  const int frame_index = round_fl_to_int(
+                              give_frame_index(context->scene, strip, timeline_frame)) +
+                          strip->anim_startofs;
+  /* Prefetch renders a scene copy, but movie readers should still get cached into
+   * the original scene. This way invalidation & cleanup affects entries cached
+   * by prefetch too. */
+  Scene &cache_scene = *prefetch_get_original_scene(context);
+  float source_fps = 0.0f;
+
+  Vector<MovieReaderAccessor> readers;
+  bool do_multiview_render = false;
+  if (use_multiview && totfiles > 0) {
+    readers.append(
+        movie_reader_cache_acquire_view(cache_scene, *context->scene, *strip, 0, frame_index));
+
+    do_multiview_render = strip->views_format == R_IMF_VIEWS_STEREO_3D ||
+                          readers[0].uses_multiview_filepath();
+
+    /* Opening individual multiview files is all-or-nothing. Fall back to the original filepath if
+     * any view cannot be opened. */
+    if (do_multiview_render && strip->views_format == R_IMF_VIEWS_INDIVIDUAL) {
+      bool all_readers_open = bool(readers[0]);
+      for (int view_id = 1; view_id < totfiles && all_readers_open; view_id++) {
+        readers.append(movie_reader_cache_acquire_view(
+            cache_scene, *context->scene, *strip, view_id, frame_index));
+        all_readers_open = bool(readers.last());
+      }
+      if (!all_readers_open) {
+        readers.clear();
+        do_multiview_render = false;
+      }
+    }
+  }
+
+  if (do_multiview_render) {
+    const int totviews = BKE_scene_multiview_num_views_get(&context->scene->r);
     Array<ImBuf *> ibuf_arr(totviews, nullptr);
 
-    int ibuf_view_id = 0;
-    for (MovieReader *reader : strip->runtime->movie_readers) {
+    for (const int64_t ibuf_view_id : readers.index_range()) {
+      MovieReaderAccessor &reader = readers[ibuf_view_id];
       if (reader) {
         ibuf_arr[ibuf_view_id] = seq_render_movie_strip_view(
             context, strip, timeline_frame, reader, r_is_proxy_image);
+        if (ibuf_view_id == 0) {
+          source_fps = MOV_get_fps(reader.reader());
+        }
       }
-      ibuf_view_id++;
     }
 
     if (strip->views_format == R_IMF_VIEWS_STEREO_3D) {
@@ -1126,8 +1225,17 @@ static ImBuf *seq_render_movie_strip(const RenderData *context,
     }
   }
   else {
-    ibuf = seq_render_movie_strip_view(
-        context, strip, timeline_frame, first_reader, r_is_proxy_image);
+    MovieReaderAccessor reader;
+    if (readers.is_empty()) {
+      reader = movie_reader_cache_acquire(cache_scene, *context->scene, *strip, frame_index);
+    }
+    else {
+      reader = std::move(readers[0]);
+    }
+    if (reader) {
+      ibuf = seq_render_movie_strip_view(context, strip, timeline_frame, reader, r_is_proxy_image);
+      source_fps = MOV_get_fps(reader.reader());
+    }
   }
 
   media_presence_set_missing(context->scene, strip, ibuf == nullptr);
@@ -1137,8 +1245,8 @@ static ImBuf *seq_render_movie_strip(const RenderData *context,
   }
 
   if (*r_is_proxy_image == false) {
-    if (first_reader) {
-      strip->data->stripdata->orig_fps = MOV_get_fps(first_reader);
+    if (source_fps != 0.0f) {
+      strip->data->stripdata->orig_fps = source_fps;
     }
     strip->data->stripdata->orig_width = ibuf->x;
     strip->data->stripdata->orig_height = ibuf->y;
@@ -1328,6 +1436,92 @@ static Depsgraph *get_depsgraph_for_scene_strip(Main *bmain, Scene *scene, ViewL
   return depsgraph;
 }
 
+/* Render a scene strip through the offscreen viewport path (used for preview and thumbnails).
+ * `scene` is the strip's scene; `display_scene` is the scene that drives the shading
+ * (timeline edit scene). */
+static ImBuf *render_scene_strip_viewport(const Scene *display_scene,
+                                          Scene *scene,
+                                          const Strip *strip,
+                                          Depsgraph *depsgraph,
+                                          Object *camera,
+                                          eDrawType draw_type,
+                                          int width,
+                                          int height,
+                                          int view_id,
+                                          GPUOffScreen *gpu_offscreen,
+                                          GPUViewport *gpu_viewport)
+{
+  const bool use_gpencil = (strip->flag & SEQ_SCENE_NO_ANNOTATION) == 0;
+  const bool use_scene_settings = (display_scene->r.seq_flag & R_SEQ_OVERRIDE_SCENE_SETTINGS) != 0;
+
+  uint draw_flags = V3D_OFSDRAW_NONE;
+  draw_flags |= (use_gpencil) ? V3D_OFSDRAW_SHOW_ANNOTATION : 0;
+  draw_flags |= (use_scene_settings) ? (V3D_OFSDRAW_OVERRIDE_SCENE_SETTINGS |
+                                        V3D_OFSDRAW_NO_WORLD_BACKGROUND_OVERRIDE) :
+                                       0;
+
+  View3DShading scene_shading = display_scene->display.shading;
+  if (use_scene_settings) {
+    /* Allow to render with the scene world color. */
+    if (display_scene->world != nullptr) {
+      copy_v3_v3(&scene_shading.background_color[0], &display_scene->world->horr);
+    }
+    else {
+      copy_v3_fl(&scene_shading.background_color[0], 0.0f);
+    }
+    scene_shading.background_type = V3D_SHADING_BACKGROUND_VIEWPORT;
+  }
+
+  const char *viewname = BKE_scene_multiview_render_view_name_get(&scene->r, view_id);
+
+  BKE_scene_graph_update_for_newframe(depsgraph);
+  Object *camera_eval = DEG_get_evaluated(depsgraph, camera);
+  Scene *scene_eval = DEG_get_evaluated_scene(depsgraph);
+
+  char err_out[256] = "unknown";
+  ImBuf *ibuf = view3d_fn(depsgraph,
+                          scene_eval,
+                          &scene_shading,
+                          draw_type,
+                          camera_eval,
+                          width,
+                          height,
+                          ImBufFlags::ByteData,
+                          eV3DOffscreenDrawFlag(draw_flags),
+                          scene->r.alphamode,
+                          viewname,
+                          gpu_offscreen,
+                          gpu_viewport,
+                          err_out);
+  if (ibuf == nullptr) {
+    fprintf(stderr, "VSE failed to render scene strip image: %s\n", err_out);
+  }
+  return ibuf;
+}
+
+struct SceneStripSavedState {
+  Scene *scene;
+  int scemode, cfra, mode;
+  float subframe;
+
+  SceneStripSavedState(Scene *scene)
+      : scene(scene),
+        scemode(scene->r.scemode),
+        cfra(scene->r.cfra),
+        mode(scene->r.mode),
+        subframe(scene->r.subframe)
+  {
+  }
+
+  ~SceneStripSavedState()
+  {
+    scene->r.scemode = this->scemode;
+    scene->r.cfra = this->cfra;
+    scene->r.subframe = this->subframe;
+    scene->r.mode &= this->mode | ~R_NO_CAMERA_SWITCH;
+  }
+};
+
 static ImBuf *seq_render_scene_strip_ex(const RenderData *context,
                                         Strip *strip,
                                         float frame_index,
@@ -1343,7 +1537,7 @@ static ImBuf *seq_render_scene_strip_ex(const RenderData *context,
    * stopped when needed. This would also give a nice progress bar for the preview
    * space so that users know there's something happening.
    *
-   * As a result the active scene now only uses OpenGL rendering for the sequencer
+   * As a result the active scene now only uses viewport rendering for the sequencer
    * preview. This is far from nice, but is the only way to prevent crashes at this
    * time.
    */
@@ -1358,13 +1552,7 @@ static ImBuf *seq_render_scene_strip_ex(const RenderData *context,
 
   const bool is_rendering = G.is_rendering;
   const bool is_preview = !context->render && (context->scene->r.seq_prev_type) != OB_RENDER;
-  const bool use_gpencil = (strip->flag & SEQ_SCENE_NO_ANNOTATION) == 0;
-  double frame = double(scene->r.sfra) + double(frame_index) + double(strip->anim_startofs);
-
-#if 0 /* UNUSED */
-  bool have_seq = (scene->r.scemode & R_DOSEQ) && scene->ed && scene->ed->seqbase.first;
-#endif
-  const bool have_comp = (scene->r.scemode & R_DOCOMP) && scene->compositing_node_group;
+  const float frame = float(scene->r.sfra) + frame_index + float(strip->anim_startofs);
 
   ViewLayer *view_layer = get_view_layer_for_scene_strip(scene, strip);
   Depsgraph *depsgraph = get_depsgraph_for_scene_strip(context->bmain, scene, view_layer);
@@ -1379,6 +1567,15 @@ static ImBuf *seq_render_scene_strip_ex(const RenderData *context,
     camera = scene->camera;
   }
 
+#if 0 /* UNUSED */
+  bool have_seq = (scene->r.scemode & R_DOSEQ) && scene->ed && scene->ed->seqbase.first;
+#endif
+  const bool is_viewport_render = view3d_fn && is_preview && camera;
+  const bke::compositor::ExecutionMode execution_mode =
+      is_viewport_render ? bke::compositor::ExecutionMode::Preview :
+                           bke::compositor::ExecutionMode::Render;
+  const bool have_comp = bke::compositor::is_enabled(*scene, execution_mode);
+
   if (have_comp == false && camera == nullptr) {
     return nullptr;
   }
@@ -1389,33 +1586,9 @@ static ImBuf *seq_render_scene_strip_ex(const RenderData *context,
   /* Temporarily disable camera switching to enforce using `camera`. */
   scene->r.mode |= R_NO_CAMERA_SWITCH;
 
-  if (view3d_fn && is_preview && camera) {
-    char err_out[256] = "unknown";
+  if (is_viewport_render) {
     int width, height;
     BKE_render_resolution(&scene->r, false, &width, &height);
-    const char *viewname = BKE_scene_multiview_render_view_name_get(&scene->r, context->view_id);
-
-    const bool use_scene_settings = (context->scene->r.seq_flag & R_SEQ_OVERRIDE_SCENE_SETTINGS) !=
-                                    0;
-
-    uint draw_flags = V3D_OFSDRAW_NONE;
-    draw_flags |= (use_gpencil) ? V3D_OFSDRAW_SHOW_ANNOTATION : 0;
-    draw_flags |= (use_scene_settings) ? (V3D_OFSDRAW_OVERRIDE_SCENE_SETTINGS |
-                                          V3D_OFSDRAW_NO_WORLD_BACKGROUND_OVERRIDE) :
-                                         0;
-
-    View3DShading scene_shading = context->scene->display.shading;
-
-    if (use_scene_settings) {
-      /* Allow to render with the scene world color. */
-      if (context->scene->world != nullptr) {
-        copy_v3_v3(&scene_shading.background_color[0], &context->scene->world->horr);
-      }
-      else {
-        copy_v3_fl(&scene_shading.background_color[0], 0.0f);
-      }
-      scene_shading.background_type = V3D_SHADING_BACKGROUND_VIEWPORT;
-    }
 
     /* for old scene this can be uninitialized,
      * should probably be added to do_versions at some point if the functionality stays */
@@ -1423,29 +1596,17 @@ static ImBuf *seq_render_scene_strip_ex(const RenderData *context,
       context->scene->r.seq_prev_type = OB_SOLID;
     }
 
-    /* opengl offscreen render */
-    BKE_scene_graph_update_for_newframe(depsgraph);
-    Object *camera_eval = DEG_get_evaluated(depsgraph, camera);
-    Scene *scene_eval = DEG_get_evaluated_scene(depsgraph);
-    ibuf = view3d_fn(
-        /* set for OpenGL render (nullptr when scrubbing) */
-        depsgraph,
-        scene_eval,
-        &scene_shading,
-        eDrawType(context->scene->r.seq_prev_type),
-        camera_eval,
-        width,
-        height,
-        ImBufFlags::ByteData,
-        eV3DOffscreenDrawFlag(draw_flags),
-        scene->r.alphamode,
-        viewname,
-        context->gpu_offscreen,
-        context->gpu_viewport,
-        err_out);
-    if (ibuf == nullptr) {
-      fprintf(stderr, "seq_render_scene_strip failed to get opengl buffer: %s\n", err_out);
-    }
+    ibuf = render_scene_strip_viewport(context->scene,
+                                       scene,
+                                       strip,
+                                       depsgraph,
+                                       camera,
+                                       eDrawType(context->scene->r.seq_prev_type),
+                                       width,
+                                       height,
+                                       context->view_id,
+                                       context->gpu_offscreen,
+                                       context->gpu_viewport);
   }
   else {
     Render *re = RE_GetSceneRender(scene);
@@ -1531,6 +1692,65 @@ static ImBuf *seq_render_scene_strip_ex(const RenderData *context,
   return ibuf;
 }
 
+ImBuf *render_scene_strip_thumbnail(
+    Main *bmain, Scene *timeline_scene, const Strip *strip, float frame_index, int size)
+{
+  if (view3d_fn == nullptr || G.is_rendering) {
+    return nullptr;
+  }
+  Scene *scene = strip->scene;
+  if (ELEM(scene, nullptr, timeline_scene)) {
+    return nullptr; /* No scene, or recursion with sequencer scene. */
+  }
+
+  /* Render at thumbnail size. */
+  int width, height;
+  BKE_render_resolution(&scene->r, false, &width, &height);
+  if (width <= 0 || height <= 0) {
+    return nullptr;
+  }
+  image_size_to_thumb_size(width, height, size);
+
+  ViewLayer *view_layer = get_view_layer_for_scene_strip(scene, strip);
+  Depsgraph *depsgraph = get_depsgraph_for_scene_strip(bmain, scene, view_layer);
+
+  SceneStripSavedState save_state(scene);
+
+  /* Note: passed frame index already includes `strip->anim_startofs`. */
+  const float frame = float(scene->r.sfra) + frame_index;
+  BKE_scene_frame_set(scene, frame);
+
+  Object *camera;
+  if (strip->scene_camera) {
+    camera = strip->scene_camera;
+  }
+  else {
+    BKE_scene_camera_switch_update(scene);
+    camera = scene->camera;
+  }
+  if (camera == nullptr) {
+    return nullptr;
+  }
+
+  /* Prevent rendering this scene's own sequencer, and enforce specific camera. */
+  scene->r.scemode &= ~R_DOSEQ;
+  scene->r.mode |= R_NO_CAMERA_SWITCH;
+
+  ImBuf *ibuf = render_scene_strip_viewport(timeline_scene,
+                                            scene,
+                                            strip,
+                                            depsgraph,
+                                            camera,
+                                            OB_SOLID,
+                                            width,
+                                            height,
+                                            0,
+                                            nullptr,
+                                            nullptr);
+
+  return ibuf;
+}
+
 static SeqResult seq_render_scene_strip(const RenderData *context,
                                         Strip *strip,
                                         float frame_index,
@@ -1544,41 +1764,11 @@ static SeqResult seq_render_scene_strip(const RenderData *context,
     return out;
   }
 
-  Scene *scene = strip->scene;
-
-  struct {
-    int scemode;
-    int timeline_frame;
-    float subframe;
-    int mode;
-  } orig_data;
-
-  /* Store state. */
-  orig_data.scemode = scene->r.scemode;
-  orig_data.timeline_frame = scene->r.cfra;
-  orig_data.subframe = scene->r.subframe;
-  orig_data.mode = scene->r.mode;
-
-  const bool is_frame_update = (orig_data.timeline_frame != scene->r.cfra) ||
-                               (orig_data.subframe != scene->r.subframe);
-
+  SceneStripSavedState save_state(strip->scene);
   out.image = seq_render_scene_strip_ex(context, strip, frame_index, timeline_frame);
   if (out.image && !out.image->can_contain_alpha()) {
     out.is_opaque_before_transform = true;
   }
-
-  /* Restore state. */
-  scene->r.scemode = orig_data.scemode;
-  scene->r.cfra = orig_data.timeline_frame;
-  scene->r.subframe = orig_data.subframe;
-  scene->r.mode &= orig_data.mode | ~R_NO_CAMERA_SWITCH;
-
-  Depsgraph *depsgraph = BKE_scene_get_depsgraph(scene,
-                                                 get_view_layer_for_scene_strip(scene, strip));
-  if (is_frame_update && (depsgraph != nullptr)) {
-    BKE_scene_graph_update_for_newframe(depsgraph);
-  }
-
   return out;
 }
 
@@ -1602,7 +1792,15 @@ static SeqResult do_render_strip_seqbase(const RenderData *context,
     frame_index += offset;
 
     if (strip->flag & SEQ_SCENE_STRIPS && strip->scene) {
-      BKE_animsys_evaluate_all_animation(context->bmain, context->depsgraph, frame_index);
+      if (AnimData *adt = BKE_animdata_from_id(&strip->scene->id)) {
+        const AnimationEvalContext anim_eval_context = BKE_animsys_eval_context_construct(
+            context->depsgraph, frame_index);
+        BKE_animsys_evaluate_animdata(&strip->scene->id,
+                                      adt,
+                                      &anim_eval_context,
+                                      ADT_RECALC_ANIM,
+                                      DEG_is_active(context->depsgraph));
+      }
     }
 
     intra_frame_cache_set_cur_frame(context->scene,
@@ -1639,6 +1837,7 @@ static SeqResult do_render_strip_uncached(const RenderData *context,
   float frame_index = give_frame_index(context->scene, strip, timeline_frame);
   if (strip->type == STRIP_TYPE_META) {
     out = do_render_strip_seqbase(context, state, strip, frame_index);
+    out.is_opaque_before_transform = out.image && !out.image->can_contain_alpha();
   }
   else if (strip->type == STRIP_TYPE_SCENE) {
     /* Recursive check. */
@@ -1893,7 +2092,7 @@ static SeqResult seq_render_strip_stack(const RenderData *context,
           ibuf1.image = IMB_allocImBuf(context->rectx,
                                        context->recty,
                                        use_float ? ImBufFlags::FloatData : ImBufFlags::ByteData);
-          seq_imbuf_assign_spaces(context->scene, ibuf1.image);
+          seq_imbuf_assign_sequencer_space(context->scene, ibuf1.image);
 
           out = seq_render_strip_stack_apply_effect(
               context, state, strip, timeline_frame, ibuf1, ibuf2);
@@ -1982,13 +2181,12 @@ ImBuf *render_give_ibuf(const RenderData *context, float timeline_frame, int cha
   Vector<Strip *> strips = query_rendered_strips_sorted(
       scene, channels, seqbasep, timeline_frame, chanshown);
 
-  /* Make sure we only keep the `anim` data for strips that are in view. */
-  relations_free_all_anim_ibufs(context->scene, timeline_frame);
-
   SeqRenderState state;
+  state.is_current_frame = timeline_frame == BKE_scene_frame_get(scene);
 
   if (!strips.is_empty() && !out) {
     std::scoped_lock lock(seq_render_mutex);
+    movie_reader_cache_timestamp_bump();
     /* Try to make space before we add any new frames to the cache if it is full.
      * If we do this after we have added the new cache, we risk removing what we just added. */
     evict_caches_if_full(orig_scene);
@@ -2026,6 +2224,9 @@ SeqResult seq_render_give_ibuf_seqbase(const RenderData *context,
 ImBuf *render_give_ibuf_direct(const RenderData *context, float timeline_frame, Strip *strip)
 {
   SeqRenderState state;
+  state.is_current_frame = timeline_frame == BKE_scene_frame_get(context->scene);
+
+  movie_reader_cache_timestamp_bump();
 
   intra_frame_cache_set_cur_frame(context->scene,
                                   timeline_frame,
@@ -2056,55 +2257,69 @@ float get_render_scale_factor(const RenderData &context)
   return get_render_scale_factor(context.preview_render_size, context.scene->r.size);
 }
 
-bool render_begin_gpu(const RenderData &rd)
+GpuContextState render_begin_gpu(const RenderData &rd)
 {
-  if (rd.gpu_context.ghost_context != nullptr) {
-    /* Use GPU context from VSE render data. */
-    gpu::GPU_activate_secondary_context(rd.gpu_context);
+  GPUContext *active_ctx = GPU_context_active_get();
+  if (active_ctx != nullptr) {
     GPU_render_begin();
-    return true;
+    return GpuContextState::AlreadyActive;
   }
 
-  if (BLI_thread_is_main()) {
-    /* Use main GPU context. */
+  /* Use GPU context from VSE render data (e.g. prefetch render). */
+  if (rd.gpu_context.ghost_context != nullptr) {
+    gpu::GPU_activate_secondary_context(rd.gpu_context);
+    GPU_render_begin();
+    return GpuContextState::Success;
+  }
+
+  /* Use main GPU context (regular preview area drawing, or "render sequence preview" operator). */
+  if (BLI_thread_is_main() || rd.render == nullptr) {
     DRW_gpu_context_enable();
-    return DRW_gpu_context_is_enabled();
+    return DRW_gpu_context_is_enabled() ? GpuContextState::Success : GpuContextState::Unsupported;
   }
 
   /* Use GPU context from Render. */
-  BLI_assert(rd.render != nullptr);
   GHOST_IContext *render_ghost_context = RE_system_gpu_context_get(rd.render);
   if (!render_ghost_context) {
-    return false;
+    return GpuContextState::Unsupported;
   }
 
   WM_system_gpu_context_activate(render_ghost_context);
   void *render_gpu_context = RE_blender_gpu_context_ensure(rd.render);
   GPU_render_begin();
   GPU_context_active_set(static_cast<GPUContext *>(render_gpu_context));
-  return true;
+  return GpuContextState::Success;
 }
 
-void render_end_gpu(const RenderData &rd)
+void render_end_gpu(const RenderData &rd, GpuContextState state)
 {
+  if (state == GpuContextState::Unsupported) {
+    return;
+  }
+  if (state == GpuContextState::AlreadyActive) {
+    GPU_render_end();
+    return;
+  }
+
+  /* Use GPU context from VSE render data (e.g. prefetch render). */
   if (rd.gpu_context.ghost_context != nullptr) {
-    /* Use GPU context from VSE render data. */
     GPU_render_end();
     gpu::GPU_deactivate_secondary_context(rd.gpu_context);
+    return;
   }
-  else if (BLI_thread_is_main()) {
-    /* Use main GPU context. */
+
+  /* Use main GPU context (regular preview area drawing, or "render sequence preview" operator). */
+  if (BLI_thread_is_main() || rd.render == nullptr) {
     DRW_gpu_context_disable();
+    return;
   }
-  else {
-    /* Use GPU context from Render. */
-    BLI_assert(rd.render != nullptr);
-    GHOST_IContext *render_ghost_context = RE_system_gpu_context_get(rd.render);
-    BLI_assert(render_ghost_context != nullptr);
-    GPU_context_active_set(nullptr);
-    GPU_render_end();
-    WM_system_gpu_context_release(render_ghost_context);
-  }
+
+  /* Use GPU context from Render. */
+  GHOST_IContext *render_ghost_context = RE_system_gpu_context_get(rd.render);
+  BLI_assert(render_ghost_context != nullptr);
+  GPU_context_active_set(nullptr);
+  GPU_render_end();
+  WM_system_gpu_context_release(render_ghost_context);
 }
 
 }  // namespace blender::seq

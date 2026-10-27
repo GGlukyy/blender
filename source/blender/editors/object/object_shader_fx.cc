@@ -147,7 +147,7 @@ bool shaderfx_remove(ReportList *reports, Main *bmain, Object *ob, ShaderFxData 
 
 void shaderfx_clear(Main *bmain, Object *ob)
 {
-  ShaderFxData *fx = static_cast<ShaderFxData *>(ob->shader_fx.first);
+  ShaderFxData *fx = ob->shader_fx.first();
   bool sort_depsgraph = false;
 
   if (!fx) {
@@ -417,35 +417,41 @@ static bool edit_shaderfx_invoke_properties(bContext *C,
   }
 
   PointerRNA ctx_ptr = CTX_data_pointer_get_type(C, "shaderfx", RNA_ShaderFx);
-  if (ctx_ptr.data != nullptr) {
+  if (ctx_ptr) {
     ShaderFxData *fx = static_cast<ShaderFxData *>(ctx_ptr.data);
     RNA_string_set(op->ptr, "shaderfx", fx->name);
     return true;
   }
 
-  /* Check the custom data of panels under the mouse for an effect. */
-  if (event != nullptr) {
-    PointerRNA *panel_ptr = ui::region_panel_custom_data_under_cursor(C, event);
-
-    if (!(panel_ptr == nullptr || RNA_pointer_is_null(panel_ptr))) {
-      if (RNA_struct_is_a(panel_ptr->type, RNA_ShaderFx)) {
-        ShaderFxData *fx = static_cast<ShaderFxData *>(panel_ptr->data);
-        RNA_string_set(op->ptr, "shaderfx", fx->name);
-        return true;
-      }
-
-      BLI_assert(r_retval != nullptr); /* We need the return value in this case. */
-      if (r_retval != nullptr) {
-        *r_retval = (OPERATOR_PASS_THROUGH | OPERATOR_CANCELLED);
-      }
-      return false;
+  if (event == nullptr) {
+    if (r_retval != nullptr) {
+      *r_retval = OPERATOR_CANCELLED;
     }
+    return false;
   }
 
-  if (r_retval != nullptr) {
-    *r_retval = OPERATOR_CANCELLED;
+  /* Check the custom data of panels under the mouse for an effect. */
+  PointerRNA *panel_ptr = ui::region_panel_custom_data_under_cursor(C, event);
+
+  if (panel_ptr == nullptr || !*panel_ptr) {
+    /* The operators using this function can typically be called from UIs that aren't related to
+     * the ShaderFx UI at all. So include #OPERATOR_PASS_THROUGH to not block events from reaching
+     * other operators/handlers. */
+    *r_retval = (OPERATOR_PASS_THROUGH | OPERATOR_CANCELLED);
+    return false;
   }
-  return false;
+
+  if (!RNA_struct_is_a(panel_ptr->type, RNA_ShaderFx)) {
+    /* Work around multiple operators using the same shortcut. The operators for the other
+     * stacks in the property editor use the same key, and will not run after these return
+     * OPERATOR_CANCELLED. */
+    *r_retval = (OPERATOR_PASS_THROUGH | OPERATOR_CANCELLED);
+    return false;
+  }
+
+  ShaderFxData *fx = static_cast<ShaderFxData *>(panel_ptr->data);
+  RNA_string_set(op->ptr, "shaderfx", fx->name);
+  return true;
 }
 
 static ShaderFxData *edit_shaderfx_property_get(wmOperator *op, Object *ob, int type)

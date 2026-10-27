@@ -119,7 +119,6 @@ static void action_flip_pchan_cache_fcurve_assign_array(FCurve_KeyCache *fkc,
  *
  * \param keyed_frames: An array of keyed_frames to evaluate,
  * note that each frame is rounded to the nearest int.
- * \param keyed_frames_len: The length of the `keyed_frames` array.
  */
 static void action_flip_pchan_cache_init(FCurve_KeyCache *fkc, const Span<float> keyed_frames)
 {
@@ -403,11 +402,11 @@ static void action_flip_pchan_rna_paths(bAction *act)
   }
 
   for (FCurve *fcu : animrig::legacy::fcurves_all(act)) {
-    if (!STRPREFIX(fcu->rna_path, path_pose_prefix)) {
+    if (!fcu->rna_path().startswith(path_pose_prefix)) {
       continue;
     }
 
-    const char *name_esc = fcu->rna_path + path_pose_prefix_len;
+    const char *name_esc = fcu->rna_path().c_str() + path_pose_prefix_len;
     const char *name_esc_end = BLI_str_escape_find_quote(name_esc);
 
     /* While unlikely, an RNA path could be malformed. */
@@ -417,11 +416,12 @@ static void action_flip_pchan_rna_paths(bAction *act)
 
     char name[MAXBONENAME];
     const size_t name_esc_len = size_t(name_esc_end - name_esc);
-    const size_t name_len = BLI_str_unescape(name, name_esc, name_esc_len);
+    bool is_complete;
+    BLI_str_unescape_ex(name, name_esc, name_esc_len, sizeof(name), &is_complete);
 
     /* While unlikely, data paths could be constructed that have longer names than
      * are currently supported. */
-    if (name_len >= sizeof(name)) [[unlikely]] {
+    if (!is_complete) [[unlikely]] {
       continue;
     }
 
@@ -431,9 +431,7 @@ static void action_flip_pchan_rna_paths(bAction *act)
     if (!STREQ(name_flip, name)) {
       char name_flip_esc[MAXBONENAME * 2];
       BLI_str_escape(name_flip_esc, name_flip, sizeof(name_flip_esc));
-      char *path_flip = BLI_sprintfN("pose.bones[\"%s%s", name_flip_esc, name_esc_end);
-      MEM_delete(fcu->rna_path);
-      fcu->rna_path = path_flip;
+      fcu->rna_path_set_move(BLI_sprintfN("pose.bones[\"%s%s", name_flip_esc, name_esc_end));
 
       if (fcu->grp != nullptr) {
         fcu->grp->flag |= AGRP_TEMP;
@@ -474,7 +472,7 @@ void BKE_action_flip_with_pose(bAction *act, Span<Object *> objects)
     Vector<FCurve *> fcurves = animrig::fcurves_for_action_slot(action, slot->handle);
     Map<RNAPath, FCurve *> fcu_cache;
     for (FCurve *fcu : fcurves) {
-      fcu_cache.add({fcu->rna_path, std::nullopt, fcu->array_index}, fcu);
+      fcu_cache.add({fcu->rna_path(), std::nullopt, fcu->array_index}, fcu);
     }
     for (bPoseChannel &pchan : object->pose->chanbase) {
       action_flip_pchan(object, &pchan, fcu_cache);

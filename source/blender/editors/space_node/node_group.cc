@@ -21,7 +21,7 @@
 #include "BLT_translation.hh"
 
 #include "BKE_action.hh"
-#include "BKE_animsys.h"
+#include "BKE_animsys.hh"
 #include "BKE_context.hh"
 #include "BKE_lib_id.hh"
 #include "BKE_library.hh"
@@ -320,7 +320,7 @@ static wmOperatorStatus node_group_ungroup_exec(bContext *C, wmOperator * /*op*/
 
   Vector<bNode *> nodes_to_ungroup;
   for (bNode *node : snode->edittree->all_nodes()) {
-    if (node->flag & NODE_SELECT) {
+    if (node->is_selected()) {
       if (node->idname == node_idname) {
         if (node->id != nullptr) {
           nodes_to_ungroup.append(node);
@@ -336,6 +336,7 @@ static wmOperatorStatus node_group_ungroup_exec(bContext *C, wmOperator * /*op*/
   for (bNode *node : nodes_to_ungroup) {
     node_group_ungroup(*C, *snode->edittree, *node);
   }
+  WM_event_handling_break(*C);
   BKE_main_ensure_invariants(*CTX_data_main(C));
   return OPERATOR_FINISHED;
 }
@@ -753,7 +754,7 @@ static wmOperatorStatus node_group_make_exec(bContext *C, wmOperator *op)
   }
 
   WM_event_add_notifier(C, NC_NODE | NA_ADDED, nullptr);
-
+  WM_event_handling_break(*C);
   /* We broke relations in node tree, need to rebuild them in the graphs. */
   DEG_relations_tag_update(bmain);
 
@@ -869,7 +870,7 @@ static wmOperatorStatus node_default_group_width_set_exec(bContext *C, wmOperato
   SpaceNode *snode = CTX_wm_space_node(C);
   bNodeTree *ntree = snode->edittree;
 
-  bNodeTreePath *last_path_item = static_cast<bNodeTreePath *>(snode->treepath.last);
+  bNodeTreePath *last_path_item = snode->treepath.last();
   bNodeTreePath *parent_path_item = last_path_item->prev;
   if (!parent_path_item) {
     return OPERATOR_CANCELLED;

@@ -351,11 +351,10 @@ static void gizmo_mesh_spin_init_refresh(const bContext *C, wmGizmoGroup *gzgrou
 #ifdef USE_SELECT_CENTER
   {
     Object *obedit = CTX_data_edit_object(C);
-    BMEditMesh *em = BKE_editmesh_from_object(obedit);
+    BMesh *bm = BKE_editmesh_bmesh_get(obedit);
     float select_center[3] = {0};
     int totsel = 0;
 
-    BMesh *bm = em->bm;
     BMVert *eve;
     BMIter iter;
 
@@ -580,6 +579,7 @@ static void gizmo_mesh_spin_redo_update_from_op(GizmoGroupData_SpinRedo *ggd)
   for (int i = 0; i < 2; i++) {
     WM_gizmo_set_matrix_location(ggd->rotate_xy[i], plane_co);
     WM_gizmo_set_matrix_location(ggd->translate_xy[i], plane_co);
+    ED_gizmo_arrow3d_reset_offset(ggd->translate_xy[i]);
   }
   WM_gizmo_set_matrix_location(ggd->angle_z, plane_co);
   WM_gizmo_set_matrix_location(ggd->rotate_view, plane_co);

@@ -10,11 +10,13 @@
 #include <algorithm>
 #include <csetjmp>
 #include <cstdio>
+#include <limits>
 
 #include "MEM_guardedalloc.h"
 
 #include "BLI_fileops.hh"
 #include "BLI_listbase.hh"
+#include "BLI_math_base.hh"
 #include "BLI_string.hh"
 #include "BLI_string_utf8.hh"
 #include "BLI_utildefines.hh"
@@ -606,6 +608,10 @@ ImBuf *imb_thumbnail_jpeg(const char *filepath,
 /** \name Save JPG Image
  * \{ */
 
+/* `libjpeg` has a maximum comment/marker length of 65533, however it does not provide a definition
+ * for that, so we hard-code it ourselves. */
+#define MAX_LIBJPEG_MARKER_LENGTH 65533
+
 static void write_jpeg(jpeg_compress_struct *cinfo, ImBuf *ibuf)
 {
   JSAMPLE *buffer = nullptr;
@@ -657,6 +663,14 @@ static void write_jpeg(jpeg_compress_struct *cinfo, ImBuf *ibuf)
          */
         text_len = BLI_snprintf_utf8_rlen(
             text, text_size, "Blender:%s:%s", prop.name, IDP_string_get(&prop));
+        /* Truncate the data if it does not fit in a single marker, as giving a buffer to `libjpeg`
+         * bigger that #MAX_LIBJPEG_MARKER_LENGTH will result in the JPEG file not being written.
+         * See #158751.
+         */
+        if (text_len > MAX_LIBJPEG_MARKER_LENGTH) {
+          CLOG_WARN(&LOG, "Writing truncated data for \"%s\"", prop.name);
+          text_len = MAX_LIBJPEG_MARKER_LENGTH;
+        }
         /* Don't write the null byte (not expected by the JPEG format). */
         jpeg_write_marker(cinfo, JPEG_COM, reinterpret_cast<JOCTET *>(text), uint(text_len));
 
@@ -670,9 +684,10 @@ static void write_jpeg(jpeg_compress_struct *cinfo, ImBuf *ibuf)
     }
   }
 
-  /* Write ICC profile if there is one associated with the colorspace. */
+  /* Write ICC profile if there is one associated with the colorspace.
+   * Our profiles are only valid for RGB channels. */
   const ColorSpace *colorspace = ibuf->byte_buffer.colorspace;
-  if (colorspace) {
+  if (colorspace && cinfo->in_color_space == JCS_RGB) {
     Vector<char> icc_profile = IMB_colormanagement_space_to_icc_profile(colorspace);
     if (!icc_profile.is_empty()) {
       icc_profile.prepend({'I', 'C', 'C', '_', 'P', 'R', 'O', 'F', 'I', 'L', 'E', 0, 0, 1});
@@ -722,6 +737,29 @@ static void write_jpeg(jpeg_compress_struct *cinfo, ImBuf *ibuf)
   MEM_delete(row_pointer[0]);
 }
 
+/**
+ * Round the pixels-per-meter density to the 16 bit integers JFIF stores.
+ *
+ * \return The relative error introduced by rounding or a dummy (maximum) value
+ * when the result is outside the range JFIF supports.
+ */
+static double jpeg_density_from_ppm(const double ppm[2],
+                                    const double unit_scale,
+                                    UINT16 r_density[2])
+{
+  double error = 0.0;
+  for (int i = 0; i < 2; i++) {
+    const double density = ppm[i] * unit_scale;
+    const double density_round = math::round(density);
+    if (!(density_round >= 1.0 && density_round <= double(std::numeric_limits<UINT16>::max()))) {
+      return std::numeric_limits<double>::max();
+    }
+    r_density[i] = UINT16(density_round);
+    error += math::abs(density_round - density) / density;
+  }
+  return error;
+}
+
 static int init_jpeg(FILE *outfile, jpeg_compress_struct *cinfo, ImBuf *ibuf)
 {
   int quality;
@@ -763,6 +801,31 @@ static int init_jpeg(FILE *outfile, jpeg_compress_struct *cinfo, ImBuf *ibuf)
 
   cinfo->dct_method = JDCT_FLOAT;
   jpeg_set_quality(cinfo, quality, true);
+
+  /* JFIF stores the density as integers in either dots per inch or centimeter.
+   * Use whichever unit rounds with the least error. */
+  if (ibuf->ppm[0] > 0.0 && ibuf->ppm[1] > 0.0) {
+    /* The JFIF unit code & the size of the unit in meters. */
+    struct Unit {
+      UINT8 code;
+      double scale;
+    };
+    const Unit units[] = {
+        {1, 0.0254}, /* Inches. */
+        {2, 0.01},   /* Centimeters. */
+    };
+    double error_best = std::numeric_limits<double>::max();
+    for (const Unit &unit : units) {
+      UINT16 density[2];
+      const double error_test = jpeg_density_from_ppm(ibuf->ppm, unit.scale, density);
+      if (error_test < error_best) {
+        error_best = error_test;
+        cinfo->density_unit = unit.code;
+        cinfo->X_density = density[0];
+        cinfo->Y_density = density[1];
+      }
+    }
+  }
 
   return 0;
 }

@@ -20,12 +20,17 @@
 
 #include "BLI_enum_flags.hh"
 #include "BLI_kdopbvh.hh"
+#include "BLI_listbase.hh"
+#include "BLI_math_matrix.hh"
 #include "BLI_math_matrix_c.hh"
+#include "BLI_math_rotation.hh"
 #include "BLI_math_rotation_c.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_rect.hh"
 #include "BLI_time.hh" /* Smooth-view. */
 
+#include "BKE_camera.h"
+#include "BKE_constraint.h"
 #include "BKE_context.hh"
 #include "BKE_lib_id.hh"
 #include "BKE_report.hh"
@@ -360,8 +365,15 @@ static void drawWalkPixel(const bContext * /*C*/, ARegion *region, void *arg)
   rctf viewborder;
 
   if (ED_view3d_cameracontrol_object_get(walk->v3d_camera_control)) {
-    ED_view3d_calc_camera_border(
-        walk->scene, walk->depsgraph, region, walk->v3d, walk->rv3d, false, &viewborder);
+    viewborder = BKE_camera_view_border(walk->scene,
+                                        walk->depsgraph,
+                                        walk->v3d,
+                                        walk->rv3d,
+                                        region->winx,
+                                        region->winy,
+                                        false,
+                                        false,
+                                        false);
     xoff = viewborder.xmin + BLI_rctf_size_x(&viewborder) * 0.5f;
     yoff = viewborder.ymin + BLI_rctf_size_y(&viewborder) * 0.5f;
   }
@@ -513,6 +525,7 @@ static struct {
   float jump_height;
   /** Only used to detect change. */
   float userdef_jump_height;
+  float grid;
 } g_walk = {
     /*base_speed*/ -1.0f,
     /*userdef_speed*/ -1.0f,
@@ -554,9 +567,14 @@ static bool initWalkInfo(bContext *C, WalkInfo *walk, wmOperator *op, const int 
     return false;
   }
 
-  if (walk->rv3d->persp == RV3D_CAMOB && walk->v3d->camera->constraints.first) {
-    BKE_report(op->reports, RPT_ERROR, "Cannot navigate an object with constraints");
-    return false;
+  if (walk->rv3d->persp == RV3D_CAMOB) {
+    for (const bConstraint &con : walk->v3d->camera->constraints) {
+      if (!BKE_constraint_has_influence(&con)) {
+        continue;
+      }
+      BKE_report(op->reports, RPT_ERROR, "Cannot navigate an object with effective constraints");
+      return false;
+    }
   }
 
   walk->state = WALK_RUNNING;
@@ -565,17 +583,22 @@ static bool initWalkInfo(bContext *C, WalkInfo *walk, wmOperator *op, const int 
                    1.0f :
                    1.0f / walk->scene->unit.scale_length;
 
-  const float userdef_jump_height = U.walk_navigation.jump_height * walk->grid;
-  const float userdef_view_height = U.walk_navigation.view_height * walk->grid;
+  const float userdef_jump_height = U.walk_navigation.jump_height / walk->grid;
+  const float userdef_view_height = U.walk_navigation.view_height / walk->grid;
 
-  if (fabsf(U.walk_navigation.walk_speed - g_walk.userdef_speed) > 0.1f) {
-    g_walk.base_speed = U.walk_navigation.walk_speed;
+  if (fabsf(U.walk_navigation.walk_speed - g_walk.userdef_speed) > 0.1f ||
+      fabsf(walk->grid - g_walk.grid) > FLT_EPSILON)
+  {
+    g_walk.base_speed = U.walk_navigation.walk_speed / walk->grid;
     g_walk.userdef_speed = U.walk_navigation.walk_speed;
   }
 
-  if (fabsf(U.walk_navigation.jump_height - g_walk.userdef_jump_height) > 0.1f) {
+  if (fabsf(userdef_jump_height - g_walk.userdef_jump_height) > 0.1f ||
+      fabsf(walk->grid - g_walk.grid) > FLT_EPSILON)
+  {
     g_walk.jump_height = userdef_jump_height;
-    g_walk.userdef_jump_height = U.walk_navigation.jump_height;
+    g_walk.userdef_jump_height = userdef_jump_height;
+    g_walk.grid = walk->grid;
   }
 
   walk->jump_height = 0.0f;
@@ -597,17 +620,17 @@ static bool initWalkInfo(bContext *C, WalkInfo *walk, wmOperator *op, const int 
 
   walk->view_height = userdef_view_height;
   walk->jump_height = userdef_jump_height;
-  walk->speed = U.walk_navigation.walk_speed;
+  walk->speed = U.walk_navigation.walk_speed / walk->grid;
   walk->speed_factor = U.walk_navigation.walk_speed_factor;
   walk->zlock = WALK_AXISLOCK_STATE_OFF;
 
   walk->gravity_state = WALK_GRAVITY_STATE_OFF;
 
   if (walk->scene->physics_settings.flag & PHYS_GLOBAL_GRAVITY) {
-    walk->gravity = fabsf(walk->scene->physics_settings.gravity[2]) * walk->grid;
+    walk->gravity = fabsf(walk->scene->physics_settings.gravity[2]) / walk->grid;
   }
   else {
-    walk->gravity = 9.80668f * walk->grid; /* m/s2 */
+    walk->gravity = 9.80668f / walk->grid; /* m/s2 */
   }
 
   walk->is_reversed = ((U.walk_navigation.flag & USER_WALK_MOUSE_REVERSE) != 0);
@@ -1077,6 +1100,11 @@ static int walkApply(bContext *C, WalkInfo *walk, bool is_confirm)
     moffset[1] = -moffset[1];
   }
 
+  if (walk->rv3d->persp == RV3D_CAMOB && (walk->rv3d->rflag & RV3D_FLIP_X) != 0) {
+    moffset[0] = -moffset[0];
+    moffset[1] = -moffset[1];
+  }
+
   /* Update jump height. */
   if (walk->gravity_state != WALK_GRAVITY_STATE_JUMP) {
     walk->jump_height = WALK_JUMP_HEIGHT;
@@ -1202,22 +1230,13 @@ static int walkApply(bContext *C, WalkInfo *walk, bool is_confirm)
       }
 
       if (walk->zlock == WALK_AXISLOCK_STATE_ACTIVE) {
-        float upvec[3];
-        copy_v3_fl3(upvec, 1.0f, 0.0f, 0.0f);
-        mul_m3_v3(mat, upvec);
-
+        const float horizon_plane[3] = {0.0f, 0.0f, 1.0f};
+        const float factor = 5.0f * time_redraw_clamped * walk->zlock_momentum *
+                             WALK_ZUP_CORRECT_FAC;
         /* Make sure we have some Z rolling. */
-        if (fabsf(upvec[2]) > 0.00001f) {
-          float roll = upvec[2] * 5.0f;
-          /* Rotate the view about this axis. */
-          copy_v3_fl3(upvec, 0.0f, 0.0f, 1.0f);
-          mul_m3_v3(mat, upvec);
-          /* Rotate about the relative up vector. */
-          axis_angle_to_quat(tmp_quat,
-                             upvec,
-                             roll * time_redraw_clamped * walk->zlock_momentum *
-                                 WALK_ZUP_CORRECT_FAC);
-          mul_qt_qtqt(rv3d->viewquat, rv3d->viewquat, tmp_quat);
+        if (view3d_horizon_correct_quat_ease_out(rv3d->viewquat, horizon_plane, false, factor) !=
+            0.0f)
+        {
           changed_viewquat = true;
 
           walk->zlock_momentum += WALK_ZUP_CORRECT_ACCEL;

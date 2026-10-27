@@ -208,7 +208,7 @@ static Bone *get_new_active_child(Bone &parent_bone)
       return &child;
     }
   }
-  return static_cast<Bone *>(parent_bone.childbase.first);
+  return parent_bone.childbase.first();
 }
 
 /**
@@ -537,6 +537,10 @@ bool ED_pose_deselect_all(Object *ob, int select_mode, const bool ignore_visibil
   bool changed = false;
   for (bPoseChannel &pchan : ob->pose->chanbase) {
     Bone *bone = pchan.bone_get(*ob);
+    if (!bone) {
+      /* Ignore the pchan if it doesn't have a corresponding bone. */
+      continue;
+    }
     /* ignore the pchan if it isn't visible or if its selection cannot be changed */
     if (ignore_visibility || animrig::bone_is_visible(arm, {&pchan, bone})) {
       int flag_prev = pchan.flag;
@@ -1185,7 +1189,7 @@ static bool pose_select_same_keyingset(bContext *C, ReportList *reports, bool ex
     return false;
   }
   if (validate_keyingset(C, nullptr, ks) != ModifyKeyReturn::SUCCESS) {
-    if (ks->paths.first == nullptr) {
+    if (ks->paths.first_ == nullptr) {
       if ((ks->flag & KEYINGSET_ABSOLUTE) == 0) {
         BKE_report(reports,
                    RPT_ERROR,

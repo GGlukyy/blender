@@ -57,6 +57,9 @@ class DebugFlags {
     /* Whether adaptive feature based runtime compile is enabled or not.
      * Requires the CUDA Toolkit and only works on Linux at the moment. */
     bool adaptive_compile = false;
+
+    /* Whether local atomic sorting is enabled or not. */
+    bool use_local_atomic_sort = true;
   };
 
   /* Descriptor of HIP feature-set to be used. */
@@ -120,6 +123,10 @@ class DebugFlags {
 
     /* Preserve unused image cache tile memory in megabytes. */
     int preserve_unused = 0;
+
+    /* Minimum tile size, loading multiple smaller file tiles at once if
+     * a tx files contains tiles smaller than this. */
+    int min_tile_size = 64;
   };
 
   /* Get instance of debug flags registry. */

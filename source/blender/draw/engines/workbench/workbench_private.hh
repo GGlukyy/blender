@@ -2,6 +2,10 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+/** \file
+ * \ingroup draw_engine
+ */
+
 #include "BKE_context.hh"
 #include "BKE_image_gpu.hh"
 
@@ -17,6 +21,8 @@
 #include "workbench_shader_shared.hh"
 
 #include "GPU_capabilities.hh"
+#include "GPU_ray_tracing.hh"
+#include <string>
 
 namespace blender::workbench {
 
@@ -105,6 +111,8 @@ class ShaderCache {
   StaticShader smaa_aa_weight = {"workbench_smaa_stage_1"};
   StaticShader smaa_resolve = {"workbench_smaa_stage_2"};
   StaticShader overlay_depth = {"workbench_overlay_depth"};
+
+  StaticShader shadow_raytrace = {"workbench_shadow_rt_raytrace"};
 };
 
 struct Material {
@@ -150,6 +158,7 @@ struct SceneState {
   Object *camera_object = nullptr;
   Camera *camera = nullptr;
   float4x4 view_projection_matrix = float4x4::identity();
+  float3 view_forward{0};
   int2 resolution = int2(0);
 
   eContextObjectMode object_mode = CTX_MODE_OBJECT;
@@ -172,10 +181,14 @@ struct SceneState {
 
   bool draw_object_id = false;
 
+  bool shadows_use_rt = false;
+
   int sample = 0;
   int samples_len = 0;
   bool reset_taa_next_sample = false;
   bool render_finished = false;
+
+  bool updated = false;
 
   /* Used when material_type == eMaterialType::SINGLE */
   Material material_override = Material(float3(1.0f));
@@ -241,6 +254,7 @@ struct SceneResources {
   static const int jitter_tx_size = 64;
 
   StringRefNull current_matcap = {};
+  std::string current_matcap_working_space = {};
   Texture matcap_tx = "matcap_tx";
 
   TextureFromPool object_id_tx = "wb_object_id_tx";
@@ -419,6 +433,8 @@ class ShadowPass {
   } view_ = {};
 
   bool enabled_;
+  bool use_raytracing_;
+  bool needs_rt_update_;
 
   UniformBuffer<ShadowPassData> pass_data_ = {};
 
@@ -428,6 +444,10 @@ class ShadowPass {
 
   /* In some cases, we know beforehand that we need to use the fail technique */
   PassMain forced_fail_ps_ = {"Shadow.ForcedFail"};
+
+  PassSimple raytrace_ps_ = {"Shadow.RayQuery"};
+  gpu::TopLevelASPtr shadow_as_;
+  gpu::Texture *gbuffer_normal_ref;
 
   /* [PassType][Is Manifold][Is Cap] */
   PassMain::Sub *passes_[PassType::MAX][2][2] = {{{nullptr}}};
@@ -439,15 +459,18 @@ class ShadowPass {
  public:
   void init(const SceneState &scene_state, SceneResources &resources);
   void update();
-  void sync();
+  void sync(SceneResources &resources);
   void object_sync(SceneState &scene_state,
                    ObjectRef &ob_ref,
                    ResourceHandleRange handle,
                    const bool has_transp_mat);
+  void end_sync();
   void draw(Manager &manager,
             View &view,
             SceneResources &resources,
             gpu::Texture &depth_stencil_tx,
+            gpu::Texture &normal_tx,
+            int2 resolution,
             /* Needed when there are opaque "In Front" objects in the scene */
             bool force_fail_method);
 
@@ -457,7 +480,7 @@ class ShadowPass {
 class VolumePass {
   bool active_ = true;
 
-  PassMain ps_ = {"Volume"};
+  PassSortable ps_ = {"Volume"};
   Framebuffer fb_ = {"Volume"};
 
   Texture dummy_shadow_tx_ = {"Volume.Dummy Shadow Tx"};
@@ -600,15 +623,17 @@ class AntiAliasingPass {
   void init(const SceneState &scene_state);
   void sync(const SceneState &scene_state, SceneResources &resources);
   void setup_view(View &view, const SceneState &scene_state);
-  void draw(
-      const DRWContext *draw_ctx,
-      Manager &manager,
-      View &view,
-      const SceneState &scene_state,
-      SceneResources &resources,
-      /** Passed directly since we may need to copy back the results from the first sample,
-       * and resources.depth_in_front_tx is only valid when mesh passes have to draw to it. */
-      gpu::Texture *depth_in_front_tx);
+  /**
+   * \param depth_in_front_tx: Passed directly since we may need to copy back the results
+   * from the first sample, and resources.depth_in_front_tx is only valid when mesh passes
+   * have to draw to it.
+   */
+  void draw(const DRWContext *draw_ctx,
+            Manager &manager,
+            View &view,
+            const SceneState &scene_state,
+            SceneResources &resources,
+            gpu::Texture *depth_in_front_tx);
 };
 
 }  // namespace blender::workbench

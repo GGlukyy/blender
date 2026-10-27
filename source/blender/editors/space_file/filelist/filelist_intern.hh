@@ -17,6 +17,9 @@
 #include "DNA_listBase.h"
 #include "DNA_space_enums.h"
 #include "DNA_space_types.h"
+
+#include "IMB_thumbs.hh"
+
 struct BlendHandle;
 namespace blender {
 
@@ -143,6 +146,7 @@ struct FileListEntryCache {
   /* Previews handling. */
   TaskPool *previews_pool = nullptr;
   ThreadQueue *previews_done = nullptr;
+  ThumbCancellationToken previews_cancel_token;
   /** Counter for previews that are not fully loaded and ready to display yet. So includes all
    * previews either in `previews_pool` or `previews_done`. #filelist_cache_previews_update() makes
    * previews in `preview_done` ready for display, so the counter is decremented there. */
@@ -174,7 +178,6 @@ struct FileListEntryPreviewTaskData {
 struct FileListFilter {
   uint64_t filter;
   uint64_t filter_id;
-  char filter_glob[FILE_MAXFILE];
   char filter_search[66]; /* + 2 for heading/trailing implicit '*' wildcards. */
   short flags;
 
@@ -228,6 +231,9 @@ struct FileList {
    */
   GHash *selection_state;
 
+  /** Extension glob, see #filelist_setglob. */
+  char filter_glob[FILE_MAXFILE];
+
   short max_recursion;
   short recursion_level;
 
@@ -274,6 +280,8 @@ enum {
    * assets) */
   FL_RELOAD_ASSET_LIBRARY = 1 << 7,
   FL_ASSETS_INCLUDE_ONLINE = 1 << 8,
+  /** #FileList.filter_glob changed, re-tag entries instead of reading the directory again. */
+  FL_NEED_RESET_GLOB = 1 << 9,
 };
 
 /** #FileList.tags */
@@ -326,6 +334,11 @@ bool filelist_checkdir_dir(const FileList * /*filelist*/,
 bool filelist_checkdir_lib(const FileList * /*filelist*/,
                            char dirpath[FILE_MAX_LIBEXTRA],
                            const bool do_change);
+
+/** Set or clear #FILE_TYPE_OPERATOR on `entry`, from `filter_glob` matching it. */
+void filelist_entry_glob_tag(FileListInternEntry *entry, const char *filter_glob);
+/** Apply #FileList.filter_glob to the entries already read. */
+void filelist_reset_glob(FileList *filelist);
 
 void filelist_set_readjob_directories(FileList *filelist);
 void filelist_set_readjob_library(FileList *filelist);

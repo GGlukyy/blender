@@ -18,6 +18,7 @@ set(INC
   ../../io/common
   ../../io/csv
   ../../io/ply
+  ../../io/spz
   ../../io/stl
   ../../io/wavefront_obj
   # RNA_prototypes.hh
@@ -38,14 +39,16 @@ set(SRC
   nodes/node_geo_boolean.cc
   nodes/node_geo_bounding_box.cc
   nodes/node_geo_camera_info.cc
-  nodes/node_geo_closure_to_list.cc
   nodes/node_geo_closure.cc
+  nodes/node_geo_closure_to_list.cc
   nodes/node_geo_cluster_by_connected.cc
   nodes/node_geo_cluster_by_distance.cc
   nodes/node_geo_collection_children.cc
   nodes/node_geo_collection_info.cc
   nodes/node_geo_combine_bundle.cc
+  nodes/node_geo_combine_list.cc
   nodes/node_geo_common.cc
+  nodes/node_geo_construct_curves.cc
   nodes/node_geo_convex_hull.cc
   nodes/node_geo_cube_grid_topology.cc
   nodes/node_geo_curve_endpoint_selection.cc
@@ -94,15 +97,17 @@ set(SRC
   nodes/node_geo_field_min_and_max.cc
   nodes/node_geo_field_to_grid.cc
   nodes/node_geo_field_to_list.cc
-  nodes/node_geo_filter_list.cc
   nodes/node_geo_field_variance.cc
+  nodes/node_geo_filter_list.cc
   nodes/node_geo_flip_faces.cc
   nodes/node_geo_foreach_geometry_element.cc
+  nodes/node_geo_geometry_materials.cc
   nodes/node_geo_geometry_to_instance.cc
   nodes/node_geo_get_attribute_names.cc
   nodes/node_geo_get_bundle_item.cc
   nodes/node_geo_get_geometry_bundle.cc
   nodes/node_geo_get_geometry_component.cc
+  nodes/node_geo_get_grid_names.cc
   nodes/node_geo_get_named_grid.cc
   nodes/node_geo_get_nested_bundle_paths.cc
   nodes/node_geo_gizmo_dial.cc
@@ -127,6 +132,7 @@ set(SRC
   nodes/node_geo_grid_mean.cc
   nodes/node_geo_grid_median.cc
   nodes/node_geo_grid_prune.cc
+  nodes/node_geo_grid_solve_poisson.cc
   nodes/node_geo_grid_to_mesh.cc
   nodes/node_geo_grid_to_points.cc
   nodes/node_geo_grid_topology_boolean.cc
@@ -137,6 +143,7 @@ set(SRC
   nodes/node_geo_import_csv.cc
   nodes/node_geo_import_obj.cc
   nodes/node_geo_import_ply.cc
+  nodes/node_geo_import_spz.cc
   nodes/node_geo_import_stl.cc
   nodes/node_geo_import_text.cc
   nodes/node_geo_import_vdb.cc
@@ -228,6 +235,7 @@ set(SRC
   nodes/node_geo_points_to_vertices.cc
   nodes/node_geo_points_to_volume.cc
   nodes/node_geo_proximity.cc
+  nodes/node_geo_rasterize_points.cc
   nodes/node_geo_raycast.cc
   nodes/node_geo_realize_instances.cc
   nodes/node_geo_remove_attribute.cc
@@ -273,6 +281,7 @@ set(SRC
   nodes/node_geo_set_nurbs_order.cc
   nodes/node_geo_set_nurbs_weight.cc
   nodes/node_geo_set_point_radius.cc
+  nodes/node_geo_set_points_type.cc
   nodes/node_geo_set_position.cc
   nodes/node_geo_set_shade_smooth.cc
   nodes/node_geo_set_spline_cyclic.cc
@@ -295,9 +304,9 @@ set(SRC
   nodes/node_geo_tool_selection.cc
   nodes/node_geo_tool_set_face_set.cc
   nodes/node_geo_tool_set_selection.cc
+  nodes/node_geo_transfer_attributes.cc
   nodes/node_geo_transform_geometry.cc
   nodes/node_geo_translate_instances.cc
-  nodes/node_geo_transfer_attributes.cc
   nodes/node_geo_triangulate.cc
   nodes/node_geo_uv_pack_islands.cc
   nodes/node_geo_uv_tangent.cc
@@ -314,11 +323,13 @@ set(SRC
   include/NOD_geo_capture_attribute.hh
   include/NOD_geo_closure.hh
   include/NOD_geo_closure_to_list.hh
+  include/NOD_geo_combine_list.hh
   include/NOD_geo_field_to_grid.hh
   include/NOD_geo_field_to_list.hh
   include/NOD_geo_foreach_geometry_element.hh
   include/NOD_geo_index_switch.hh
   include/NOD_geo_menu_switch.hh
+  include/NOD_geo_rasterize_points.hh
   include/NOD_geo_repeat.hh
   include/NOD_geo_simulation.hh
   include/NOD_geo_tag_filter.hh
@@ -355,6 +366,14 @@ set(LIB
   PRIVATE bf::dependencies::optional::gmp
   PRIVATE bf::dependencies::optional::bullet
 )
+
+if(WITH_IO_SPZ)
+  list(APPEND LIB
+    PRIVATE bf_io_common
+    PRIVATE bf_io_spz
+  )
+  add_definitions(-DWITH_IO_SPZ)
+endif()
 
 if(WITH_IO_STL)
   list(APPEND LIB

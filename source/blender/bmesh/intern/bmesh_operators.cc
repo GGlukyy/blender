@@ -585,11 +585,11 @@ void BMO_mesh_selected_remap(BMesh *bm,
                              BMOpSlot *slot_face_map,
                              const bool check_select)
 {
-  if (bm->selected.first) {
+  if (bm->selected.first()) {
     BMEditSelection *ese, *ese_next;
     BMOpSlot *slot_elem_map;
 
-    for (ese = static_cast<BMEditSelection *>(bm->selected.first); ese; ese = ese_next) {
+    for (ese = bm->selected.first(); ese; ese = ese_next) {
       ese_next = ese->next;
 
       switch (ese->htype) {
@@ -1060,14 +1060,21 @@ void BMO_slot_buffer_hflag_enable(BMesh *bm,
                                   BMOpSlot slot_args[BMO_OP_MAX_SLOTS],
                                   const char *slot_name,
                                   const char htype,
-                                  const char hflag,
+                                  char hflag,
                                   const bool do_flush)
 {
+  /* Mutually exclusive, hidden wins but this points to an error with the caller. */
+  if ((hflag & BM_ELEM_SELECT) && (hflag & BM_ELEM_HIDDEN)) {
+    hflag &= ~BM_ELEM_SELECT;
+    BLI_assert_unreachable();
+  }
+
   BMOpSlot *slot = BMO_slot_get(slot_args, slot_name);
   BMElem **data = reinterpret_cast<BMElem **>(slot->data.buf);
   int i;
   const bool do_flush_select = (do_flush && (hflag & BM_ELEM_SELECT));
   const bool do_flush_hide = (do_flush && (hflag & BM_ELEM_HIDDEN));
+  const bool do_check_select = hflag & BM_ELEM_SELECT;
 
   BLI_assert(slot->slot_type == BMO_OP_SLOT_ELEMENT_BUF);
   BLI_assert(((slot->slot_subtype.elem & BM_ALL_NOLOOP) & htype) == htype);
@@ -1083,10 +1090,16 @@ void BMO_slot_buffer_hflag_enable(BMesh *bm,
     }
 
     if (do_flush_hide) {
-      BM_elem_hide_set(bm, *data, false);
+      BM_elem_hide_set(bm, *data, true);
     }
 
-    BM_elem_flag_enable(*data, hflag);
+    /* Prevent hidden geometry from becoming selected. */
+    char hflag_final = hflag;
+    if (do_check_select && BM_elem_flag_test(*data, BM_ELEM_HIDDEN)) {
+      hflag_final &= ~BM_ELEM_SELECT;
+    }
+
+    BM_elem_flag_enable(*data, hflag_final);
   }
 }
 
@@ -1485,9 +1498,7 @@ void BMO_error_raise(BMesh *bm, BMOperator *owner, eBMOpErrorLevel level, const 
 
 bool BMO_error_occurred_at_level(BMesh *bm, eBMOpErrorLevel level)
 {
-  for (const BMOpError *err = static_cast<const BMOpError *>(bm->errorstack.first); err;
-       err = err->next)
-  {
+  for (const BMOpError *err = bm->errorstack.first(); err; err = err->next) {
     if (err->level == level) {
       return true;
     }
@@ -1497,7 +1508,7 @@ bool BMO_error_occurred_at_level(BMesh *bm, eBMOpErrorLevel level)
 
 bool BMO_error_get(BMesh *bm, const char **r_msg, BMOperator **r_op, eBMOpErrorLevel *r_level)
 {
-  BMOpError *err = static_cast<BMOpError *>(bm->errorstack.first);
+  BMOpError *err = bm->errorstack.first();
   if (err == nullptr) {
     return false;
   }
@@ -1540,9 +1551,9 @@ bool BMO_error_pop(BMesh *bm, const char **r_msg, BMOperator **r_op, eBMOpErrorL
   bool result = BMO_error_get(bm, r_msg, r_op, r_level);
 
   if (result) {
-    BMOpError *err = static_cast<BMOpError *>(bm->errorstack.first);
+    BMOpError *err = bm->errorstack.first();
 
-    BLI_remlink(&bm->errorstack, bm->errorstack.first);
+    BLI_remlink(&bm->errorstack, bm->errorstack.first_);
     MEM_delete(err);
   }
 

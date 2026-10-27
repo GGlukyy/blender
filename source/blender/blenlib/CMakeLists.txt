@@ -30,7 +30,6 @@ set(SRC
   intern/BLI_linklist_lockfree.cc
   intern/BLI_memarena.cc
   intern/BLI_memblock.cc
-  intern/BLI_memiter.cc
   intern/BLI_mempool.cc
   intern/BLI_mmap.cc
   intern/BLI_subprocess.cc
@@ -81,6 +80,7 @@ set(SRC
   intern/index_mask_expression.cc
   intern/index_range.cc
   intern/jitter_2d.cc
+  intern/kdtree.cc
   intern/lasso_2d.cc
   intern/lazy_threading.cc
   intern/length_parameterize.cc
@@ -175,8 +175,8 @@ set(SRC
   BLI_array_state.hh
   BLI_array_store.hh
   BLI_array_store_utils.hh
-  BLI_array_utils_c.hh
   BLI_array_utils.hh
+  BLI_array_utils_c.hh
   BLI_asan.hh
   BLI_assert.hh
   BLI_astar.hh
@@ -206,6 +206,7 @@ set(SRC
   BLI_compression.hh
   BLI_compute_context.hh
   BLI_concurrent_map.hh
+  BLI_concurrent_set.hh
   BLI_console.hh
   BLI_convexhull_2d.hh
   BLI_cpp_type.hh
@@ -217,6 +218,7 @@ set(SRC
   BLI_disjoint_set.hh
   BLI_dot_export.hh
   BLI_dot_export_attribute_enums.hh
+  BLI_dot_export_fwd.hh
   BLI_dynamic_stack_buffer.hh
   BLI_dynstr.hh
   BLI_easing.hh
@@ -247,8 +249,8 @@ set(SRC
   BLI_generic_virtual_vector_array.hh
   BLI_ghash.hh
   BLI_gsqueue.hh
-  BLI_hash_c.hh
   BLI_hash.hh
+  BLI_hash_c.hh
   BLI_hash_fwd.hh
   BLI_hash_md5.hh
   BLI_hash_mm2a.hh
@@ -269,6 +271,7 @@ set(SRC
   BLI_jitter_2d.hh
   BLI_kdopbvh.hh
   BLI_kdtree.hh
+  BLI_kdtree_new.hh
   BLI_kdtree_types.hh
   BLI_lasso_2d.hh
   BLI_lazy_threading.hh
@@ -287,46 +290,45 @@ set(SRC
   BLI_math_angle_types.hh
   BLI_math_axis_angle.hh
   BLI_math_axis_angle_types.hh
-  BLI_math_base_c.hh
   BLI_math_base.hh
+  BLI_math_base_c.hh
   BLI_math_base_safe.hh
   BLI_math_basis_types.hh
   BLI_math_bits.hh
   BLI_math_boolean.hh
-  BLI_math_color_c.hh
   BLI_math_color.hh
   BLI_math_color_blend.hh
+  BLI_math_color_c.hh
   BLI_math_constants.hh
   BLI_math_euler.hh
   BLI_math_euler_types.hh
   BLI_math_filter.hh
-  BLI_math_geom_c.hh
   BLI_math_geom.hh
+  BLI_math_geom_c.hh
   BLI_math_half.hh
   BLI_math_inline.hh
   BLI_math_interp.hh
-  BLI_math_matrix_c.hh
   BLI_math_matrix.hh
+  BLI_math_matrix_c.hh
   BLI_math_matrix_types.hh
   BLI_math_mpq.hh
   BLI_math_quaternion.hh
   BLI_math_quaternion_types.hh
-  BLI_math_rotation_c.hh
   BLI_math_rotation.hh
+  BLI_math_rotation_c.hh
   BLI_math_rotation_legacy.hh
   BLI_math_rotation_types.hh
   BLI_math_solvers.hh
   BLI_math_statistics.hh
   BLI_math_time.hh
-  BLI_math_vector_c.hh
   BLI_math_vector.hh
+  BLI_math_vector_c.hh
   BLI_math_vector_mpq_types.hh
   BLI_math_vector_swizzle.hh
   BLI_math_vector_types.hh
   BLI_math_vector_unroll.hh
   BLI_memarena.hh
   BLI_memblock.hh
-  BLI_memiter.hh
   BLI_memory_cache.hh
   BLI_memory_cache_file_load.hh
   BLI_memory_counter.hh
@@ -338,8 +340,8 @@ set(SRC
   BLI_mmap.hh
   BLI_multi_value_map.hh
   BLI_mutex.hh
-  BLI_noise_c.hh
   BLI_noise.hh
+  BLI_noise_c.hh
   BLI_normalized_int_types.hh
   BLI_offset_indices.hh
   BLI_offset_span.hh
@@ -352,8 +354,8 @@ set(SRC
   BLI_probing_strategies.hh
   BLI_quadric.hh
   BLI_radial_tiling.hh
-  BLI_rand_c.hh
   BLI_rand.hh
+  BLI_rand_c.hh
   BLI_random_access_iterator_mixin.hh
   BLI_rect.hh
   BLI_resource_scope.hh
@@ -368,8 +370,8 @@ set(SRC
   BLI_sort.hh
   BLI_sort_utils.hh
   BLI_span.hh
-  BLI_stack_c.hh
   BLI_stack.hh
+  BLI_stack_c.hh
   BLI_strict_flags.hh
   BLI_string.hh
   BLI_string_cursor_utf8.hh
@@ -382,8 +384,8 @@ set(SRC
   BLI_subprocess.hh
   BLI_sys_types.hh
   BLI_system.hh
-  BLI_task_c.hh
   BLI_task.hh
+  BLI_task_c.hh
   BLI_task_size_hints.hh
   BLI_tempfile.hh
   BLI_threads.hh
@@ -555,8 +557,8 @@ if(WITH_GTESTS)
     tests/BLI_math_base_test.cc
     tests/BLI_math_bits_test.cc
     tests/BLI_math_color_test.cc
-    tests/BLI_math_geom_test.cc
     tests/BLI_math_geom_hh_test.cc
+    tests/BLI_math_geom_test.cc
     tests/BLI_math_half_test.cc
     tests/BLI_math_interp_test.cc
     tests/BLI_math_matrix_test.cc
@@ -567,7 +569,6 @@ if(WITH_GTESTS)
     tests/BLI_math_time_test.cc
     tests/BLI_math_vector_test.cc
     tests/BLI_math_vector_types_test.cc
-    tests/BLI_memiter_test.cc
     tests/BLI_memory_cache_test.cc
     tests/BLI_memory_counter_test.cc
     tests/BLI_memory_utils_test.cc

@@ -411,10 +411,10 @@ static void view_align_update(Main * /*main*/, Scene * /*scene*/, PointerRNA *pt
   RNA_struct_system_idprops_unset(ptr, "rotation");
 }
 
-void add_unit_props_size(wmOperatorType *ot)
+void add_unit_props_size(wmOperatorType *ot, float default_value)
 {
   RNA_def_float_distance(
-      ot->srna, "size", 2.0f, 0.0, OBJECT_ADD_SIZE_MAXF, "Size", "", 0.001, 100.00);
+      ot->srna, "size", default_value, 0.0, OBJECT_ADD_SIZE_MAXF, "Size", "", 0.001, 100.00);
 }
 
 void add_unit_props_radius_ex(wmOperatorType *ot, float default_value)
@@ -637,13 +637,8 @@ Object *add_type_with_obdata(bContext *C,
   Scene *scene = CTX_data_scene(C);
   ViewLayer *view_layer = CTX_data_view_layer(C);
 
-  {
-    BKE_view_layer_synced_ensure(*bmain, scene, view_layer);
-    Object *obedit = BKE_view_layer_edit_object_get(view_layer);
-    if (obedit != nullptr) {
-      editmode_exit_ex(bmain, scene, obedit, EM_FREEDATA);
-    }
-  }
+  /* Ensure we leave edit-mode for all objects (NOOP outside of edit-mode). */
+  editmode_exit_multi_ex(bmain, scene, view_layer, EM_FREEDATA);
 
   /* deselects all, sets active object */
   Object *ob;
@@ -1340,7 +1335,7 @@ static wmOperatorStatus object_add_text_exec(bContext *C, wmOperator *op)
   }
 
   obedit = add_type(C, OB_FONT, nullptr, loc, rot, enter_editmode, local_view_bits);
-  BKE_object_obdata_size_init(obedit, RNA_float_get(op->ptr, "radius"));
+  BKE_object_obdata_size_init(obedit, RNA_float_get(op->ptr, "size"));
 
   return OPERATOR_FINISHED;
 }
@@ -1360,7 +1355,7 @@ void OBJECT_OT_text_add(wmOperatorType *ot)
   ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
 
   /* properties */
-  add_unit_props_radius(ot);
+  add_unit_props_size(ot, 1.0f);
   add_generic_props(ot, true);
 }
 
@@ -2366,7 +2361,7 @@ static NodesModifierData *add_essential_asset_modifier(bContext &C,
   if (!asset_id) {
     return nullptr;
   }
-  if (GS(asset_id->name) != ID_NT) {
+  if (asset_id->id_type() != ID_NT) {
     return nullptr;
   }
   bNodeTree *node_group = id_cast<bNodeTree *>(asset_id);
@@ -2376,7 +2371,7 @@ static NodesModifierData *add_essential_asset_modifier(bContext &C,
   id_us_plus(&node_group->id);
   nmd->flag |= NODES_MODIFIER_HIDE_DATABLOCK_SELECTOR;
   BKE_modifier_unique_name(&object.modifiers, &nmd->modifier);
-  MOD_nodes_update_interface(&object, nmd);
+  MOD_nodes_update_interface(bmain, &object, nmd);
   DEG_id_tag_update(&object.id, ID_RECALC_GEOMETRY);
   return nmd;
 }
@@ -2600,7 +2595,7 @@ static wmOperatorStatus object_delete_exec(bContext *C, wmOperator *op)
   }
   CTX_DATA_END;
 
-  if (has_volume_lightprobe && WM_jobs_test(wm, scene, WM_JOB_TYPE_LIGHT_BAKE)) {
+  if (has_volume_lightprobe && WM_jobs_has_running(wm, scene, WM_JOB_TYPE_LIGHT_BAKE)) {
     WM_jobs_stop_type(wm, scene, WM_JOB_TYPE_LIGHT_BAKE);
     BKE_report(op->reports,
                RPT_WARNING,
@@ -4199,9 +4194,7 @@ static Object *convert_font_to_curve_legacy_generic(Object *ob,
     /* other users */
     Object *ob1 = nullptr;
     if (ID_REAL_USERS(&cu->id) > 1) {
-      for (ob1 = static_cast<Object *>(info.bmain->objects.first); ob1;
-           ob1 = static_cast<Object *>(ob1->id.next))
-      {
+      for (ob1 = info.bmain->objects.first(); ob1; ob1 = static_cast<Object *>(ob1->id.next)) {
         if (ob1->data == ob->data && ob1 != ob) {
           ob1->type = OB_CURVES_LEGACY;
           DEG_id_tag_update(&ob1->id,

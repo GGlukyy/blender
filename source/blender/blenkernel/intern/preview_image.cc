@@ -78,10 +78,14 @@ static PreviewImage *previewimg_deferred_create(const char *filepath, ThumbSourc
   return prv;
 }
 
-static void previewimg_free_or_defer(PreviewImage **prv)
+/**
+ * \return True if the preview image was deleted or marked for deferred deletion. User counting may
+ *     prevent the freeing so this will return false then.
+ */
+static bool previewimg_free_or_defer(PreviewImage **prv)
 {
   if (*prv == nullptr) {
-    return;
+    return false;
   }
 
   BLI_assert(BLI_thread_is_main());
@@ -91,7 +95,7 @@ static void previewimg_free_or_defer(PreviewImage **prv)
     (*prv)->runtime->user_count--;
     if ((*prv)->runtime->user_count > 0) {
       /* Don't free yet. */
-      return;
+      return false;
     }
   }
 
@@ -110,6 +114,7 @@ static void previewimg_free_or_defer(PreviewImage **prv)
     BKE_previewimg_free(prv);
   }
   *prv = nullptr;
+  return true;
 }
 
 PreviewImage *BKE_previewimg_create()
@@ -379,8 +384,12 @@ void BKE_previewimg_cached_release(const char *name)
 {
   BLI_assert(BLI_thread_is_main());
   CachedPreviewMap &cache = get_cached_previews_map();
-  PreviewImage *prv = cache.pop_default_as(name, nullptr);
-  previewimg_free_or_defer(&prv);
+  PreviewImage *prv = cache.lookup_default(name, nullptr);
+  /* The preview may not be freed when there are more users still. In that case, keep the preview
+   * in the cache, so other users can still find it an free it eventually. */
+  if (previewimg_free_or_defer(&prv)) {
+    cache.pop_try(name);
+  }
 }
 
 void BKE_previewimg_ensure(PreviewImage *prv, const int size)
@@ -509,9 +518,15 @@ void BKE_previewimg_render_end(PreviewImage *prv,
     prv->runtime->tag[size] |= PRV_TAG_DEFERRED_INVALID;
   }
 
-  /* When job is cancelled for e.g. undo, PRV_RENDERING remains so that
-   * it can resume when going back to that undo step. */
-  if (status != PRV_RENDER_STATUS_CANCELLED) {
+  /* When job is cancelled for e.g. undo, PRV_RENDERING remains so that it can resume
+   * when going back to that undo step. Also tag for restart in the current state, if
+   * the ID itself was not modified in the undo step but still had its preview cancelled. */
+  if (status == PRV_RENDER_STATUS_CANCELLED) {
+    if (!(prv->flag[size] & PRV_USER_EDITED)) {
+      prv->runtime->tag[size] |= PRV_TAG_RESTART_RENDERING;
+    }
+  }
+  else {
     prv->flag[size] &= ~PRV_RENDERING;
   }
 
@@ -575,14 +590,18 @@ void BKE_previewimg_blend_write(BlendWriter *writer, const PreviewImage *prv)
     return;
   }
 
-  PreviewImage prv_copy = dna::shallow_copy(*prv);
-  prv_copy.runtime = nullptr;
-  writer->write_struct_at_address(prv, &prv_copy);
-  if (prv_copy.rect[0]) {
-    writer->write_uint32_array(prv_copy.w[0] * prv_copy.h[0], prv_copy.rect[0]);
+  writer->write_struct(prv, [writer](BlendStructWriter<PreviewImage> &struct_writer) {
+    struct_writer.shallow_data.runtime = nullptr;
+    if (!writer->is_undo()) {
+      struct_writer.shallow_data.changed_timestamp[0] = 0;
+      struct_writer.shallow_data.changed_timestamp[1] = 0;
+    }
+  });
+  if (prv->rect[0]) {
+    writer->write_uint32_array(prv->w[0] * prv->h[0], prv->rect[0]);
   }
-  if (prv_copy.rect[1]) {
-    writer->write_uint32_array(prv_copy.w[1] * prv_copy.h[1], prv_copy.rect[1]);
+  if (prv->rect[1]) {
+    writer->write_uint32_array(prv->w[1] * prv->h[1], prv->rect[1]);
   }
 }
 

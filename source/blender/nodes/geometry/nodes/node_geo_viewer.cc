@@ -185,7 +185,7 @@ static bool draw_from_viewer_log_value(CustomSocketDrawParams &params,
   if (!value.is_single()) {
     return false;
   }
-  const GPointer single_value = value.get_single_ptr();
+  const GPointer single_value = value.get();
   return draw_gpointer(params, single_value);
 }
 
@@ -265,9 +265,27 @@ static void node_declare(NodeDeclarationBuilder &b)
     return;
   }
 
-  b.add_default_layout();
-
   const NodeGeometryViewer &storage = node_storage(*node);
+
+  bool has_geometry_input = false;
+  bool has_potential_attribute_input = false;
+  for (const int i : IndexRange(storage.items_num)) {
+    const NodeGeometryViewerItem &item = storage.items[i];
+    const eNodeSocketDatatype socket_type = item.socket_type;
+    if (socket_type == SOCK_GEOMETRY) {
+      has_geometry_input = true;
+    }
+    else if (socket_type_supports_attributes(socket_type)) {
+      has_potential_attribute_input = true;
+    }
+  }
+
+  if (has_geometry_input && has_potential_attribute_input) {
+    b.add_layout([](ui::Layout &layout, bContext * /*C*/, PointerRNA *ptr) {
+      layout.prop(ptr, "domain", UI_ITEM_NONE, "", ICON_NONE);
+    });
+  }
+
   for (const int i : IndexRange(storage.items_num)) {
     const NodeGeometryViewerItem &item = storage.items[i];
     const eNodeSocketDatatype socket_type = item.socket_type;
@@ -290,31 +308,8 @@ static void node_init(bNodeTree * /*tree*/, bNode *node)
 {
   NodeGeometryViewer *data = MEM_new<NodeGeometryViewer>(__func__);
   data->data_type_legacy = CD_PROP_FLOAT;
-  data->domain = int8_t(AttrDomain::Auto);
+  data->domain = int8_t(bke::AttrDomainSelection::Auto);
   node->storage = data;
-}
-
-static void node_layout(ui::Layout &layout, bContext * /*C*/, PointerRNA *ptr)
-{
-  const bNode &node = *ptr->data_as<bNode>();
-  const NodeGeometryViewer &storage = node_storage(node);
-
-  bool has_geometry_input = false;
-  bool has_potential_field_input = false;
-  for (const int i : IndexRange(storage.items_num)) {
-    const NodeGeometryViewerItem &item = storage.items[i];
-    const eNodeSocketDatatype socket_type = item.socket_type;
-    if (socket_type == SOCK_GEOMETRY) {
-      has_geometry_input = true;
-    }
-    else if (socket_type_supports_attributes(socket_type)) {
-      has_potential_field_input = true;
-    }
-  }
-
-  if (has_geometry_input && has_potential_field_input) {
-    layout.prop(ptr, "domain", UI_ITEM_NONE, "", ICON_NONE);
-  }
 }
 
 static void node_layout_ex(ui::Layout &layout, bContext *C, PointerRNA *ptr)
@@ -380,14 +375,14 @@ static void log_viewer_attribute(const bNode &node, eval_log::ViewerNodeLog &r_l
     /* Changing the `value` field doesn't change the hash or equality of the item. */
     GMutablePointer geometry_ptr = const_cast<bke::SocketValueVariant &>(
                                        r_log.items.lookup_key_as(*last_geometry_identifier).value)
-                                       .get_single_ptr();
+                                       .get();
     GeometrySet &geometry = *geometry_ptr.get<GeometrySet>();
     if (!(value.is_single() || value.is_field())) {
       continue;
     }
-    const GField field = value.get<GField>();
-    const AttrDomain domain_or_auto = AttrDomain(storage.domain);
-    if (domain_or_auto == AttrDomain::Instance) {
+    const GField field = value.copy_as<GField>();
+    const auto domain_or_auto = bke::AttrDomainSelection(storage.domain);
+    if (domain_or_auto == bke::AttrDomainSelection::Instance) {
       if (geometry.has_instances()) {
         bke::GeometryComponent &component =
             geometry.get_component_for_write<bke::InstancesComponent>();
@@ -407,8 +402,8 @@ static void log_viewer_attribute(const bNode &node, eval_log::ViewerNodeLog &r_l
             continue;
           }
           bke::GeometryComponent &component = geometry.get_component_for_write(type);
-          AttrDomain used_domain = domain_or_auto;
-          if (domain_or_auto == AttrDomain::Auto) {
+          AttrDomain used_domain;
+          if (domain_or_auto == bke::AttrDomainSelection::Auto) {
             if (const std::optional<AttrDomain> domain = bke::try_detect_field_domain(component,
                                                                                       field))
             {
@@ -417,6 +412,9 @@ static void log_viewer_attribute(const bNode &node, eval_log::ViewerNodeLog &r_l
             else {
               used_domain = AttrDomain::Point;
             }
+          }
+          else {
+            used_domain = bke::AttrDomain(domain_or_auto);
           }
           bke::try_capture_field_on_geometry(component, viewer_attribute_name, used_domain, field);
         }
@@ -451,20 +449,20 @@ static void node_extra_info(NodeExtraInfoParams &params)
   SpaceNode *snode = CTX_wm_space_node(&params.C);
   if (snode) {
     if (std::optional<ed::space_node::ObjectAndModifier> object_and_modifier =
-            ed::space_node::get_modifier_for_node_editor(*snode))
+            ed::space_node::get_geometry_nodes_modifier_for_node_editor(*snode))
     {
       const NodesModifierData &nmd = *object_and_modifier->nmd;
       nmd.node_group->ensure_topology_cache();
       if (!(nmd.modifier.mode & eModifierMode_Realtime)) {
         NodeExtraInfoRow row;
-        row.icon = ICON_ERROR;
+        row.icon = ICON_STATUS_ERROR;
         row.text = TIP_("Modifier disabled");
         row.tooltip = TIP_("The viewer does not work because the modifier is disabled");
         params.rows.append(std::move(row));
       }
       else if (!nmd.node_group->group_output_node()) {
         NodeExtraInfoRow row;
-        row.icon = ICON_ERROR;
+        row.icon = ICON_STATUS_ERROR;
         row.text = TIP_("Missing output");
         row.tooltip = TIP_(
             "The viewer does not work because the node group used by the modifier has no output");
@@ -475,7 +473,7 @@ static void node_extra_info(NodeExtraInfoParams &params)
   const auto data_type = eCustomDataType(node_storage(params.node).data_type_legacy);
   if (ELEM(data_type, CD_PROP_QUATERNION, CD_PROP_FLOAT4X4)) {
     NodeExtraInfoRow row;
-    row.icon = ICON_INFO;
+    row.icon = ICON_STATUS_INFO;
     row.text = TIP_("No color overlay");
     row.tooltip = TIP_(
         "Rotation values can only be displayed with the text overlay in the 3D view");
@@ -535,7 +533,6 @@ static void node_register()
   bke::node_type_storage(ntype, "NodeGeometryViewer", node_free_storage, node_copy_storage);
   ntype.declare = node_declare;
   ntype.initfunc = node_init;
-  ntype.draw_buttons = node_layout;
   ntype.draw_buttons_ex = node_layout_ex;
   ntype.insert_link = node_insert_link;
   ntype.gather_link_search_ops = node_gather_link_searches;

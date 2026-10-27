@@ -39,6 +39,7 @@ math_nodes = {
 }
 
 switch_nodes = {
+    "GeometryNodeSwitch",
     "GeometryNodeMenuSwitch",
     "GeometryNodeIndexSwitch",
 }
@@ -125,23 +126,6 @@ class NodeOperator:
         type=NodeSetting,
         options={'SKIP_SAVE'},
     )
-
-    @classmethod
-    def description(cls, _context, properties):
-        from nodeitems_builtins import node_tree_group_type
-
-        nodetype = properties["type"]
-        if nodetype in node_tree_group_type.values():
-            for setting in properties.settings:
-                if setting.name == "node_tree":
-                    node_group = eval(setting.value)
-                    if node_group.description:
-                        return node_group.description
-        bl_rna = bpy.types.Node.bl_rna_get_subclass(nodetype)
-        if bl_rna is not None:
-            return tip_(bl_rna.description)
-        else:
-            return ""
 
     # Deselect all nodes in the tree.
     @staticmethod
@@ -342,14 +326,18 @@ class NodeSwapOperator(NodeOperator):
                 pass
 
     def transfer_input_values(self, old_node, new_node):
-        if (old_node.bl_idname in math_nodes) and (new_node.bl_idname in math_nodes):
+        both_math_nodes = (old_node.bl_idname in math_nodes) and (new_node.bl_idname in math_nodes)
+        both_switch_nodes = (old_node.bl_idname in switch_nodes) and (new_node.bl_idname in switch_nodes)
+
+        transfer_by_index = both_math_nodes or both_switch_nodes
+
+        if transfer_by_index:
             for source_input, target_input in zip(old_node.inputs, new_node.inputs):
 
                 new_value = cast_value(source=source_input, target=target_input)
 
                 if new_value is not None:
                     target_input.default_value = new_value
-
         else:
             for input in old_node.inputs:
                 try:
@@ -367,22 +355,31 @@ class NodeSwapOperator(NodeOperator):
 
     @staticmethod
     def transfer_links(tree, old_node, new_node, is_input):
-        both_math_nodes = (old_node.bl_idname in math_nodes) and (new_node.bl_idname in math_nodes)
         is_reroute = old_node.bl_idname == "NodeReroute"
 
+        both_math_nodes = (old_node.bl_idname in math_nodes) and (new_node.bl_idname in math_nodes)
+        both_switch_nodes = (old_node.bl_idname in switch_nodes) and (new_node.bl_idname in switch_nodes)
+
+        transfer_by_index = both_math_nodes or both_switch_nodes
+
         if is_input:
-            if both_math_nodes:
+            if transfer_by_index:
                 for i, input in enumerate(old_node.inputs):
                     for link in input.links[:]:
                         try:
                             is_muted = link.is_muted
+                            old_socket = link.from_socket
                             new_socket = new_node.inputs[i]
 
                             if new_socket.hide or not new_socket.enabled:
                                 continue
 
-                            new_link = tree.links.new(link.from_socket, new_socket)
+                            new_link = tree.links.new(old_socket, new_socket)
                             new_link.is_muted = is_muted
+
+                            if not new_link.is_valid:
+                                tree.links.remove(new_link)
+
                         except IndexError:
                             pass
             elif is_reroute:
@@ -418,7 +415,7 @@ class NodeSwapOperator(NodeOperator):
                             pass
 
         else:
-            if both_math_nodes:
+            if transfer_by_index:
                 for i, output in enumerate(old_node.outputs):
                     for link in output.links[:]:
                         try:
@@ -478,45 +475,79 @@ class NodeSwapOperator(NodeOperator):
     def get_switch_items(node):
         switch_type = node.bl_idname
 
+        if switch_type == "GeometryNodeSwitch":
+            return [node.inputs["False"], node.inputs["True"]]
         if switch_type == "GeometryNodeMenuSwitch":
             return node.enum_definition.enum_items
         if switch_type == "GeometryNodeIndexSwitch":
             return node.index_switch_items
+
         return None
 
     def transfer_switch_data(self, old_node, new_node):
         old_switch_items = self.get_switch_items(old_node)
         new_switch_items = self.get_switch_items(new_node)
 
-        new_switch_items.clear()
+        old_selector_value = old_node.inputs[0].default_value
+        if old_node.bl_idname == "GeometryNodeMenuSwitch":
+            if old_selector_value == '':
+                old_selector_value = 0
+            else:
+                old_selector_value = next(i for i, item in enumerate(
+                    old_switch_items) if item.name == old_selector_value)
 
-        if new_node.bl_idname == "GeometryNodeMenuSwitch":
-            for i, old_item in enumerate(old_switch_items[:]):
-                # Change the menu item names to numerical indices.
-                # This makes it so that later functions that match by socket name work on the switches.
-                if hasattr(old_item, "name"):
-                    old_item.name = str(i)
+        if new_node.bl_idname in {"GeometryNodeMenuSwitch", "GeometryNodeIndexSwitch"}:
+            new_switch_items.clear()
 
-                new_switch_items.new(str(i))
+            if old_node.bl_idname == "GeometryNodeSwitch":
+                new_node.data_type = old_node.input_type
 
-            if (old_switch_value := old_node.inputs[0].default_value) != '':
-                new_node.inputs[0].default_value = str(old_switch_value)
+            if new_node.bl_idname == "GeometryNodeMenuSwitch":
+                for i, old_item in enumerate(old_switch_items[:]):
+                    if old_node.bl_idname == "GeometryNodeSwitch":
+                        name = old_item.name
+                    elif old_node.bl_idname in {"GeometryNodeMenuSwitch", "GeometryNodeIndexSwitch"}:
+                        name = str(i)
 
+                    new_switch_items.new(name)
+
+            elif new_node.bl_idname == "GeometryNodeIndexSwitch":
+                for old_item in old_switch_items[:]:
+                    new_switch_items.new()
+
+        elif new_node.bl_idname == "GeometryNodeSwitch":
+            if old_node.bl_idname != "GeometryNodeSwitch":
+                new_node.input_type = old_node.data_type
+
+        if new_node.bl_idname == "GeometryNodeSwitch":
+            new_node.inputs[0].default_value = bool(old_selector_value)
+        elif new_node.bl_idname == "GeometryNodeMenuSwitch":
+            new_node.inputs[0].default_value = str(old_selector_value)
         elif new_node.bl_idname == "GeometryNodeIndexSwitch":
-            for i, old_item in enumerate(old_switch_items[:]):
-                # Change the menu item names to numerical indices.
-                # This makes it so that later functions that match by socket name work on the switches.
-                if hasattr(old_item, "name"):
-                    old_item.name = str(i)
+            new_node.inputs[0].default_value = int(old_selector_value)
 
-                new_switch_items.new()
 
-            if (old_switch_value := old_node.inputs[0].default_value) != '':
-                new_node.inputs[0].default_value = int(old_switch_value)
+class SingleNodeOperator:
+    @classmethod
+    def description(cls, _context, properties):
+        from nodeitems_builtins import node_tree_group_type
+
+        nodetype = properties["type"]
+        if nodetype in node_tree_group_type.values():
+            for setting in properties.settings:
+                if setting.name == "node_tree":
+                    node_group = eval(setting.value)
+                    if node_group.description:
+                        return node_group.description
+        bl_rna = bpy.types.Node.bl_rna_get_subclass(nodetype)
+        if bl_rna is not None:
+            return tip_(bl_rna.description)
+        else:
+            return ""
 
 
 # Simple basic operator for adding a node.
-class NODE_OT_add_node(NodeAddOperator, Operator):
+class NODE_OT_add_node(NodeAddOperator, SingleNodeOperator, Operator):
     """Add a node to the active tree"""
     bl_idname = "node.add_node"
     bl_label = "Add Node"
@@ -548,7 +579,7 @@ class NODE_OT_add_node(NodeAddOperator, Operator):
             return {'CANCELLED'}
 
 
-class NODE_OT_swap_node(NodeSwapOperator, Operator):
+class NODE_OT_swap_node(NodeSwapOperator, SingleNodeOperator, Operator):
     """Replace the selected nodes with the specified type"""
     bl_idname = "node.swap_node"
     bl_label = "Swap Node"
@@ -599,6 +630,20 @@ class NODE_OT_swap_node(NodeSwapOperator, Operator):
             except RuntimeError:
                 pass
 
+    @staticmethod
+    def swap_visible_output(tree, node, output_name):
+        target_output = node.outputs[output_name]
+        target_output.hide = False
+
+        for socket in node.outputs:
+            if socket.name != output_name:
+                for link in socket.links[:]:
+                    new_link = tree.links.new(target_output, link.to_socket)
+                    if not new_link.is_valid:
+                        tree.links.remove(new_link)
+
+                socket.hide = True
+
     def execute(self, context):
         tree = context.space_data.edit_tree
         nodes_to_delete = set()
@@ -609,6 +654,10 @@ class NODE_OT_swap_node(NodeSwapOperator, Operator):
 
             if (old_node.bl_idname == self.type) and (not hasattr(old_node, "node_tree")):
                 self.apply_node_settings(old_node)
+
+                if self.visible_output:
+                    self.swap_visible_output(tree, old_node, output_name=self.visible_output)
+
                 continue
 
             new_node = self.create_node(context, self.type)
@@ -1129,6 +1178,18 @@ class NodeInterfaceOperator():
             return False
         return True
 
+    @staticmethod
+    def clear_interface_selection(interface, keep_active=False):
+        for item in interface.items_tree:
+            item.select = False
+
+        if keep_active:
+            if active := interface.active:
+                active.select = True
+        else:
+            # Have no active item if `keep_active` is False.
+            interface.active_index = -1
+
 
 class NODE_OT_interface_item_new(NodeInterfaceOperator, Operator):
     """Add a new item to the interface"""
@@ -1189,12 +1250,14 @@ class NODE_OT_interface_item_new(NodeInterfaceOperator, Operator):
                 interface.move_to_parent(item, active_item, len(active_item.interface_items))
             else:
                 interface.move_to_parent(item, active_item.parent, active_pos + 1)
+
+        self.clear_interface_selection(interface, keep_active=True)
         interface.active = item
 
         return {'FINISHED'}
 
 
-class NODE_OT_interface_item_new_panel_toggle(Operator):
+class NODE_OT_interface_item_new_panel_toggle(NodeInterfaceOperator, Operator):
     '''Add a checkbox to the currently selected panel'''
     bl_idname = "node.interface_item_new_panel_toggle"
     bl_label = "New Panel Toggle"
@@ -1243,6 +1306,7 @@ class NODE_OT_interface_item_new_panel_toggle(Operator):
         interface.move_to_parent(item, active_panel, 0)
         item.is_panel_toggle = True
 
+        self.clear_interface_selection(interface, keep_active=True)
         return {'FINISHED'}
 
 
@@ -1272,6 +1336,7 @@ class NODE_OT_interface_item_duplicate(NodeInterfaceOperator, Operator):
             item_copy = interface.copy(item)
             interface.active = item_copy
 
+        self.clear_interface_selection(interface, keep_active=True)
         return {'FINISHED'}
 
 
@@ -1361,6 +1426,7 @@ class NODE_OT_interface_item_make_panel_toggle(NodeInterfaceOperator, Operator):
         # Make the panel active.
         interface.active = parent_panel
 
+        self.clear_interface_selection(interface, keep_active=True)
         return {'FINISHED'}
 
 
@@ -1409,6 +1475,7 @@ class NODE_OT_interface_item_unlink_panel_toggle(NodeInterfaceOperator, Operator
         # Make the socket active.
         interface.active = first_item
 
+        self.clear_interface_selection(interface, keep_active=True)
         return {'FINISHED'}
 
 

@@ -31,6 +31,7 @@ class ColorSpace;
 using ColorSpace = ocio::ColorSpace;
 
 struct rcti;
+struct ColorManagedColorspaceSettings;
 struct Depsgraph;
 struct ID;
 struct ImBuf;
@@ -44,8 +45,6 @@ struct ImbFormatOptions;
 struct Library;
 struct Main;
 struct Object;
-struct PartialUpdateRegister;
-struct PartialUpdateUser;
 struct RenderResult;
 struct RenderSlot;
 struct ReportList;
@@ -64,11 +63,6 @@ struct ImageRuntime {
   Mutex cache_mutex;
 
   ImBufCache *cache = nullptr;
-
-  /** Register containing partial updates. */
-  PartialUpdateRegister *partial_update_register = nullptr;
-  /** Partial update user for gpu::Textures stored inside the Image. */
-  PartialUpdateUser *partial_update_user = nullptr;
 
   /* The image's current update count. See deg::set_id_update_count for more information. */
   uint64_t update_count = 0;
@@ -163,12 +157,12 @@ MovieReader *openanim(const char *filepath,
                       ImBufFlags ibuf_flags,
                       int streamindex,
                       bool keep_original_colorspace,
-                      char colorspace[IMA_MAX_SPACE]);
+                      ColorManagedColorspaceSettings *colorspace_settings);
 MovieReader *openanim_noload(const char *filepath,
                              ImBufFlags flags,
                              int streamindex,
                              bool keep_original_colorspace,
-                             char colorspace[IMA_MAX_SPACE]);
+                             ColorManagedColorspaceSettings *colorspace_settings);
 
 /* ********************************** NEW IMAGE API *********************** */
 
@@ -210,11 +204,14 @@ ImBuf *BKE_image_acquire_ibuf(Image *ima, ImageUser *iuser, void **r_lock);
  *
  * If #r_load_failed is provided, it is set to true when the image is known to have failed
  * loading when the #ImBuf is null, as opposed to not having been loaded yet.
+ *
+ * If #cached_only is true, image buffers are not loaded from files.
  */
 ImBuf *BKE_image_acquire_ibuf_gpu(Image *ima,
                                   ImageUser *iuser,
                                   void **r_lock,
-                                  bool *r_load_failed = nullptr);
+                                  bool *r_load_failed = nullptr,
+                                  bool cached_only = false);
 
 /**
  * Return image buffer for given image, user, pass, and view.
@@ -256,28 +253,41 @@ void BKE_image_alpha_mode_from_extension(Image *image);
 /**
  * Returns a new image or NULL if it can't load.
  *
+ * \param check_open: Whether to check if the file can be opened. If false, the function will
+ * not attempt to open the file specified by the filepath.
+ *
  * \note: The `_in_lib` version allows to add a new image in a given library. It also affects the
  * root path used for relative filepaths. See also #BKE_id_new and #BKE_id_new_in_lib
  * documentation for more details.
  */
-Image *BKE_image_load(Main *bmain, const char *filepath);
+Image *BKE_image_load(Main *bmain, const char *filepath, bool check_open = true);
 Image *BKE_image_load_in_lib(Main *bmain,
                              std::optional<Library *> owner_library,
-                             const char *filepath);
+                             const char *filepath,
+                             bool check_open = true);
 /**
  * Returns existing Image when filename/type is same.
  *
  * Checks if image was already loaded, then returns same image otherwise creates new
  * (does not load ibuf itself).
  *
+ * \param check_open: Whether to check if the file can be opened. If false, the function will
+ * not attempt to open the file specified by the filepath.
+ * \param r_exists: Optional output parameter that will be set to true if an image data-block
+ * already exists for this filepath.
+ *
  * \note: The `_in_lib` version allows to find an existing (or add a new) image in a given library.
  * It also affects the root path used for relative filepaths. See also #BKE_id_new and
  * #BKE_id_new_in_lib documentation for more details.
  */
-Image *BKE_image_load_exists(Main *bmain, const char *filepath, bool *r_exists = nullptr);
+Image *BKE_image_load_exists(Main *bmain,
+                             const char *filepath,
+                             bool check_open = true,
+                             bool *r_exists = nullptr);
 Image *BKE_image_load_exists_in_lib(Main *bmain,
                                     std::optional<Library *> owner_library,
                                     const char *filepath,
+                                    bool check_open = true,
                                     bool *r_exists = nullptr);
 
 /**
@@ -579,7 +589,6 @@ float *BKE_image_get_float_pixels_for_frame(Image *image, int frame, int tile);
 /* Image modifications */
 
 bool BKE_image_is_dirty(Image *image);
-void BKE_image_mark_dirty(Image *image, ImBuf *ibuf);
 bool BKE_image_buffer_format_writable(ImBuf *ibuf);
 
 bool BKE_image_is_dirty_writable(Image *image, bool *r_is_writable);
@@ -591,6 +600,10 @@ int BKE_image_sequence_guess_offset(Image *image);
 bool BKE_image_has_anim(Image *image);
 bool BKE_image_has_packedfile(const Image *image);
 bool BKE_image_has_filepath(const Image *ima);
+/**
+ * Checks if the image is loaded from a file, on disk or packed.
+ */
+bool BKE_image_source_is_file(const Image *ima);
 /**
  * Checks the image buffer changes with time (not keyframed values).
  */
@@ -621,28 +634,5 @@ RenderSlot *BKE_image_add_renderslot(Image *ima, const char *name);
 bool BKE_image_remove_renderslot(Image *ima, ImageUser *iuser, int slot);
 RenderSlot *BKE_image_get_renderslot(Image *ima, int index);
 bool BKE_image_clear_renderslot(Image *ima, ImageUser *iuser, int slot);
-
-/* --- image_partial_update.cc --- */
-/** Image partial updates. */
-/**
- * \brief Create a new PartialUpdateUser. An Object that contains data to use partial updates.
- */
-PartialUpdateUser *BKE_image_partial_update_create(const Image *image);
-
-/**
- * \brief free a partial update user.
- */
-void BKE_image_partial_update_free(PartialUpdateUser *user);
-
-/* --- partial updater (image side) --- */
-
-void BKE_image_partial_update_register_free(Image *image);
-/** \brief Mark a region of the image to update. */
-void BKE_image_partial_update_mark_region(Image *image,
-                                          const ImageTile *image_tile,
-                                          const ImBuf *image_buffer,
-                                          const rcti *updated_region);
-/** \brief Mark the whole image to be updated. */
-void BKE_image_partial_update_mark_full_update(Image *image);
 
 }  // namespace blender

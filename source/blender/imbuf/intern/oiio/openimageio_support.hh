@@ -2,6 +2,10 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+/** \file
+ * \ingroup openimageio
+ */
+
 #pragma once
 
 /* Include our own math header first to avoid warnings about M_PI
@@ -43,12 +47,10 @@ struct ReadContext {
  */
 struct WriteContext {
   const char *file_format;
-  ImBuf *ibuf;
+  const ImBuf *ibuf;
   ImBufFlags flags;
 
-  uchar *mem_start;
-  OIIO::stride_t mem_xstride;
-  OIIO::stride_t mem_ystride;
+  OIIO::image_span<const std::byte> mem_span;
   OIIO::ImageSpec mem_spec;
 };
 
@@ -95,7 +97,7 @@ Vector<uint8_t> imb_oiio_write_buffer(const WriteContext &ctx, const OIIO::Image
  * be used.
  */
 WriteContext imb_create_write_context(const char *file_format,
-                                      ImBuf *ibuf,
+                                      const ImBuf *ibuf,
                                       ImBufFlags flags,
                                       bool prefer_float = true);
 

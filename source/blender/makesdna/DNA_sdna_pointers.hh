@@ -2,6 +2,10 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+/** \file
+ * \ingroup DNA
+ */
+
 #pragma once
 
 #include "BLI_vector.hh"
@@ -15,8 +19,8 @@ struct PointerInfo {
   /** Offset in bytes from the start of the struct. */
   int64_t offset;
   /** Additional information about the pointer which can be useful for debugging. */
-  const char *member_type_name = nullptr;
-  const char *name = nullptr;
+  StringRef member_type_name;
+  StringRef name;
 };
 
 /** All pointers within a DNA struct (including nested structs). */

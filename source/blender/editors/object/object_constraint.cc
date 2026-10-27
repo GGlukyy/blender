@@ -160,7 +160,7 @@ bConstraint *constraint_active_get(Object *ob)
 /** \name Add Constraint Utilities
  * \{ */
 
-/* helper function for add_constriant - sets the last target for the active constraint */
+/* helper function for add_constraint - sets the last target for the active constraint */
 static void set_constraint_nth_target(bConstraint *con,
                                       Object *target,
                                       const char subtarget[],
@@ -185,7 +185,7 @@ static void set_constraint_nth_target(bConstraint *con,
       index = targets_num - 1;
     }
 
-    for (ct = static_cast<bConstraintTarget *>(targets.first), i = 0; ct; ct = ct->next, i++) {
+    for (ct = targets.first(), i = 0; ct; ct = ct->next, i++) {
       if (i == index) {
         ct->tar = target;
         STRNCPY_UTF8(ct->subtarget, subtarget);
@@ -518,13 +518,13 @@ static void test_constraints(Main *bmain, Object *ob, bPoseChannel *pchan)
 
 void object_test_constraints(Main *bmain, Object *ob)
 {
-  if (ob->constraints.first) {
+  if (ob->constraints.first_) {
     test_constraints(bmain, ob, nullptr);
   }
 
   if (ob->type == OB_ARMATURE && ob->pose) {
     for (bPoseChannel &pchan : ob->pose->chanbase) {
-      if (pchan.constraints.first) {
+      if (pchan.constraints.first_) {
         test_constraints(bmain, ob, &pchan);
       }
     }
@@ -642,7 +642,7 @@ static bool edit_constraint_invoke_properties(bContext *C,
     return true;
   }
 
-  if (ptr.data) {
+  if (ptr) {
     con = static_cast<bConstraint *>(ptr.data);
     RNA_string_set(op->ptr, "constraint", con->name);
 
@@ -658,35 +658,41 @@ static bool edit_constraint_invoke_properties(bContext *C,
     return true;
   }
 
-  /* Check the custom data of panels under the mouse for a modifier. */
-  if (event != nullptr) {
-    PointerRNA *panel_ptr = ui::region_panel_custom_data_under_cursor(C, event);
-
-    if (!(panel_ptr == nullptr || RNA_pointer_is_null(panel_ptr))) {
-      if (RNA_struct_is_a(panel_ptr->type, RNA_Constraint)) {
-        con = static_cast<bConstraint *>(panel_ptr->data);
-        RNA_string_set(op->ptr, "constraint", con->name);
-        list = constraint_list_from_constraint(ob, con, nullptr);
-        RNA_enum_set(op->ptr,
-                     "owner",
-                     (&ob->constraints == list) ? EDIT_CONSTRAINT_OWNER_OBJECT :
-                                                  EDIT_CONSTRAINT_OWNER_BONE);
-
-        return true;
-      }
-
-      BLI_assert(r_retval != nullptr); /* We need the return value in this case. */
-      if (r_retval != nullptr) {
-        *r_retval = (OPERATOR_PASS_THROUGH | OPERATOR_CANCELLED);
-      }
-      return false;
+  if (event == nullptr) {
+    if (r_retval != nullptr) {
+      *r_retval = OPERATOR_CANCELLED;
     }
+    return false;
   }
 
-  if (r_retval != nullptr) {
-    *r_retval = OPERATOR_CANCELLED;
+  /* Check the custom data of panels under the mouse for an effect. */
+  PointerRNA *panel_ptr = ui::region_panel_custom_data_under_cursor(C, event);
+
+  if (panel_ptr == nullptr || !*panel_ptr) {
+    /* The operators using this function can typically be called from UIs that aren't related to
+     * the constraints UI at all. So include #OPERATOR_PASS_THROUGH to not block events from
+     * reaching other operators/handlers. */
+    *r_retval = (OPERATOR_PASS_THROUGH | OPERATOR_CANCELLED);
+    return false;
   }
-  return false;
+
+  if (!RNA_struct_is_a(panel_ptr->type, RNA_Constraint)) {
+    /* Work around multiple operators using the same shortcut. The operators for the other
+     * stacks in the property editor use the same key, and will not run after these return
+     * OPERATOR_CANCELLED. */
+    *r_retval = (OPERATOR_PASS_THROUGH | OPERATOR_CANCELLED);
+    return false;
+  }
+
+  con = static_cast<bConstraint *>(panel_ptr->data);
+  RNA_string_set(op->ptr, "constraint", con->name);
+  list = constraint_list_from_constraint(ob, con, nullptr);
+  RNA_enum_set(op->ptr,
+               "owner",
+               (&ob->constraints == list) ? EDIT_CONSTRAINT_OWNER_OBJECT :
+                                            EDIT_CONSTRAINT_OWNER_BONE);
+
+  return true;
 }
 
 static bConstraint *edit_constraint_property_get(bContext *C, wmOperator *op, Object *ob, int type)
@@ -1067,7 +1073,7 @@ static wmOperatorStatus followpath_path_animate_exec(bContext *C, wmOperator *op
   /* setup dummy 'generator' modifier here to get 1-1 correspondence still working
    * and define basic slope of this curve based on the properties
    */
-  if (!fcu->bezt && !fcu->fpt && !fcu->modifiers.first) {
+  if (!fcu->bezt && !fcu->fpt && !fcu->modifiers.first_) {
     FModifier *fcm = add_fmodifier(&fcu->modifiers, FMODIFIER_TYPE_GENERATOR, fcu);
     FMod_Generator *gen = static_cast<FMod_Generator *>(fcm->data);
 
@@ -1454,7 +1460,7 @@ static wmOperatorStatus constraint_delete_invoke(bContext *C, wmOperator *op, co
 {
   wmOperatorStatus retval;
   if (!edit_constraint_invoke_properties(C, op, event, &retval)) {
-    return OPERATOR_CANCELLED;
+    return retval;
   }
   return constraint_delete_exec(C, op);
 }
@@ -1501,7 +1507,7 @@ static wmOperatorStatus constraint_apply_exec(bContext *C, wmOperator *op)
   /* Store name temporarily for report. */
   char name[MAX_NAME];
   STRNCPY_UTF8(name, con->name);
-  const bool is_first_constraint = con != constraints->first;
+  const bool is_first_constraint = con != constraints->first_;
 
   /* Copy the constraint. */
   bool success;
@@ -1553,7 +1559,7 @@ static wmOperatorStatus constraint_apply_invoke(bContext *C, wmOperator *op, con
 {
   wmOperatorStatus retval;
   if (!edit_constraint_invoke_properties(C, op, event, &retval)) {
-    return OPERATOR_CANCELLED;
+    return retval;
   }
   return constraint_apply_exec(C, op);
 }
@@ -1638,7 +1644,7 @@ static wmOperatorStatus constraint_copy_invoke(bContext *C, wmOperator *op, cons
 {
   wmOperatorStatus retval;
   if (!edit_constraint_invoke_properties(C, op, event, &retval)) {
-    return OPERATOR_CANCELLED;
+    return retval;
   }
   return constraint_copy_exec(C, op);
 }
@@ -1682,7 +1688,7 @@ static wmOperatorStatus constraint_copy_to_selected_exec(bContext *C, wmOperator
 
   if (pchan) {
     /* Don't do anything if bone doesn't exist or doesn't have any constraints. */
-    if (pchan->constraints.first == nullptr) {
+    if (pchan->constraints.first_ == nullptr) {
       BKE_report(op->reports, RPT_ERROR, "No constraints for copying");
       return OPERATOR_CANCELLED;
     }
@@ -2088,7 +2094,7 @@ static wmOperatorStatus pose_constraint_copy_exec(bContext *C, wmOperator *op)
   bPoseChannel *pchan = CTX_data_active_pose_bone(C);
 
   /* don't do anything if bone doesn't exist or doesn't have any constraints */
-  if (ELEM(nullptr, pchan, pchan->constraints.first)) {
+  if (ELEM(nullptr, pchan, pchan->constraints.first_)) {
     BKE_report(op->reports, RPT_ERROR, "No active bone with constraints for copying");
     return OPERATOR_CANCELLED;
   }
@@ -2631,7 +2637,7 @@ static wmOperatorStatus pose_ik_add_invoke(bContext *C, wmOperator *op, const wm
   }
 
   /* bone must not have any constraints already */
-  for (con = static_cast<bConstraint *>(pchan->constraints.first); con; con = con->next) {
+  for (con = pchan->constraints.first(); con; con = con->next) {
     if (con->type == CONSTRAINT_TYPE_KINEMATIC) {
       break;
     }
@@ -2727,7 +2733,7 @@ static wmOperatorStatus pose_ik_clear_exec(bContext *C, wmOperator * /*op*/)
 
     /* TODO: should we be checking if these constraints were local
      * before we try and remove them? */
-    for (con = static_cast<bConstraint *>(pchan->constraints.first); con; con = next) {
+    for (con = pchan->constraints.first(); con; con = next) {
       next = con->next;
       if (con->type == CONSTRAINT_TYPE_KINEMATIC) {
         BKE_constraint_remove_ex(&pchan->constraints, ob, con);

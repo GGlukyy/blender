@@ -118,6 +118,7 @@ static bool exr_has_alpha(MultiPartInputFile &file);
 static bool exr_has_channels(MultiPartInputFile &file);
 static bool imb_exr_is_multi(MultiPartInputFile &file);
 static const ColorSpace *imb_exr_part_colorspace(const Header &header);
+static const Header &imb_exr_colorspace_header(const MultiPartInputFile &file);
 
 /* XYZ with Illuminant E */
 static Imf::Chromaticities CHROMATICITIES_XYZ_E{
@@ -417,6 +418,15 @@ static float compression_half_max(const int compression, const int quality)
   return HALF_MAX;
 }
 
+static int openexr_compression_for_data_colorspace(const int compression)
+{
+  /* Still write data passes lossless when using lossy compression. */
+  if (ELEM(compression, R_IMF_EXR_CODEC_DWAA, R_IMF_EXR_CODEC_DWAB)) {
+    return R_IMF_EXR_CODEC_ZIP;
+  }
+  return compression;
+}
+
 static void openexr_header_compression(Header *header, int compression, int quality)
 {
   switch (compression) {
@@ -495,10 +505,39 @@ static int openexr_header_get_compression(const Header &header)
     case HTJ2K32_COMPRESSION:
       return R_IMF_EXR_CODEC_HTJ2K;
 #endif
+#if COMBINED_OPENEXR_VERSION >= 30500
+    case LJ2K_COMPRESSION:
+      return R_IMF_EXR_CODEC_HTJ2K;
+    case ZSTD_COMPRESSION:
+      return R_IMF_EXR_CODEC_ZIP;
+#endif
     case NUM_COMPRESSION_METHODS:
       return R_IMF_EXR_CODEC_NONE;
   }
   return R_IMF_EXR_CODEC_NONE;
+}
+
+static bool openexr_metadata_skip_read(const char *name, const bool is_multi)
+{
+  /* For multi-layer reads, the part name and view are used for the view, layer, pass
+   * names. The metadata from the first part is used as shared metadata for all passes,
+   * as OpenEXR has no global metadata. So this would be wrong for all but the first pass.
+   *
+   * For single layer images we keep it, as in that case writing out the image again
+   * would otherwise lose the metadata. */
+  return is_multi && STR_ELEM(name, "name", "view");
+}
+
+static bool openexr_metadata_skip_write(const char *name, const bool is_multi)
+{
+  /* Do not blindly pass along compression or colorInteropID, as they might have changed
+   * and will already be written when appropriate. Same for metadata about the software
+   * that wrote the file and the type (scanline, tiled, deep).
+   *
+   * Multi-layer name and view are skipped, see #openexr_metadata_skip_read. */
+  return STR_ELEM(
+             name, "compression", "colorInteropID", "Software", "BlenderMultiChannel", "type") ||
+         (is_multi && STR_ELEM(name, "name", "view"));
 }
 
 static void openexr_header_metadata_global(Header *header, const IDProperty *metadata)
@@ -509,9 +548,7 @@ static void openexr_header_metadata_global(Header *header, const IDProperty *met
 
   if (metadata) {
     for (IDProperty &prop : metadata->data.group) {
-      /* Do not blindly pass along compression or colorInteropID, as they might have
-       * changed and will already be written when appropriate. */
-      if ((prop.type == IDP_STRING) && !STR_ELEM(prop.name, "compression", "colorInteropID")) {
+      if ((prop.type == IDP_STRING) && !openexr_metadata_skip_write(prop.name, false)) {
         header->insert(prop.name, StringAttribute(IDP_string_get(&prop)));
       }
     }
@@ -566,15 +603,6 @@ static void openexr_header_metadata_colorspace(Header *header, const ImBuf *ibuf
   }
 
   openexr_header_metadata_colorspace(header, colorspace);
-}
-
-static void openexr_header_metadata_callback(void *data,
-                                             const char *propname,
-                                             char *prop,  // NOLINT
-                                             int /*len*/)
-{
-  Header *header = (Header *)data;
-  header->insert(propname, StringAttribute(prop));
 }
 
 struct RGBAHalf {
@@ -832,8 +860,10 @@ struct ExrReadHandle {
   Vector<ExrChannel> channels;
   /** Layers and passes. */
   Vector<ExrLayer> layers;
-  /** True once the layer/pass info has been parsed from the file header.
-   * Parsing is deferred to the first call that needs its. */
+  /**
+   * True once the layer/pass info has been parsed from the file header.
+   * Parsing is deferred to the first call that needs its.
+   */
   bool channels_parsed = false;
 };
 
@@ -976,7 +1006,7 @@ void IMB_exr_write_pass(ExrWriteHandle *handle,
     echan.ystride = ystride;
     /* This is used for writing, the data should not be modified. ????????? */
     echan.rect = const_cast<float *>(rect + channel);
-    echan.use_half_float = use_half_float;
+    echan.use_half_float = use_half_float && !IMB_colormanagement_space_is_data(echan.colorspace);
   }
 
   CLOG_DEBUG(&LOG, "Added pass %s %s", layerpassname.c_str(), channelnames.c_str());
@@ -994,7 +1024,15 @@ static void openexr_header_metadata_multi(ExrWriteHandle *handle,
     addMultiView(header, handle->views);
   }
   BKE_stamp_info_callback(
-      &header, const_cast<StampData *>(stamp), openexr_header_metadata_callback, false);
+      &header,
+      const_cast<StampData *>(stamp),
+      [](void *data, const char *propname, char *prop, int /*len*/) {
+        if (!openexr_metadata_skip_write(propname, true)) {
+          Header *header = (Header *)data;
+          header->insert(propname, StringAttribute(prop));
+        }
+      },
+      false);
 }
 
 bool IMB_exr_write_end(ExrWriteHandle *handle,
@@ -1053,7 +1091,16 @@ bool IMB_exr_write_end(ExrWriteHandle *handle,
       if (part_headers.is_empty() || last_part_name != echan.part_name) {
         Header part_header = header;
 
-        /* When writing multipart, set name, view,type and colorspace in each part. */
+        /* Store global metadata in the first header only. Large metadata like cryptomatte would
+         * be bad to duplicate many times. */
+        if (part_headers.is_empty()) {
+          openexr_header_metadata_multi(handle, part_header, stamp);
+        }
+
+        /* When writing multipart, set name, view, type and colorspace in each part.
+         *
+         * Note we do this after openexr_header_metadata_multi to replace any attributes with the
+         * same name, because e.g. the part header name is really just a "name" attribute. */
         if (handle->write_multipart) {
           part_header.setName(echan.part_name);
           if (!echan.view.empty()) {
@@ -1061,12 +1108,11 @@ bool IMB_exr_write_end(ExrWriteHandle *handle,
           }
           part_header.insert("type", StringAttribute(SCANLINEIMAGE));
           openexr_header_metadata_colorspace(&part_header, echan.colorspace);
-        }
 
-        /* Store global metadata in the first header only. Large metadata like cryptomatte would
-         * be bad to duplicate many times. */
-        if (part_headers.is_empty()) {
-          openexr_header_metadata_multi(handle, part_header, stamp);
+          if (echan.colorspace && IMB_colormanagement_space_is_data(echan.colorspace)) {
+            openexr_header_compression(
+                &part_header, openexr_compression_for_data_colorspace(compress), quality);
+          }
         }
 
         part_headers.append(std::move(part_header));
@@ -1389,7 +1435,7 @@ void IMB_exr_read_passes(ExrReadHandle *handle,
   const int width = handle->width;
   const int height = handle->height;
 
-  /* Find matching layer and pass for every pass info to read .*/
+  /* Find matching layer and pass for every pass info to read. */
   for (ExrPassInfo &entry : entries) {
     bool found = false;
     for (ExrLayer &lay : handle->layers) {
@@ -1499,17 +1545,18 @@ static bool imb_exr_multi_read_single_pass(ExrReadHandle *handle, ImBuf *ibuf)
       combined = &info;
       break;
     }
-    if (rgb == nullptr && (info.chan_id == "RGBA" || info.chan_id == "RGB")) {
+    if (rgb == nullptr && ELEM(info.chan_id, "RGBA", "RGB")) {
       rgb = &info;
     }
   }
   ExrPassInfo *chosen = combined ? combined : rgb ? rgb : &passes.first();
 
-  /* Read pixels. */
-  if (!IMB_alloc_float_pixels(ibuf, chosen->channels)) {
+  /* Read pixels, as 1, 3 or 4 channels. */
+  const int channels = ELEM(chosen->channels, 1, 3, 4) ? chosen->channels : 3;
+  if (!IMB_alloc_float_pixels(ibuf, channels)) {
     return false;
   }
-  ibuf->color_mode = IMB_color_mode_from_channels(chosen->channels);
+  ibuf->color_mode = IMB_color_mode_from_channels(channels);
   chosen->ibuf = ibuf;
 
   MutableSpan<ExrPassInfo> single(chosen, 1);
@@ -1742,7 +1789,7 @@ static bool exr_has_xyz_channels(ExrReadHandle *exr_handle)
 static Vector<ExrChannel> exr_channels_in_multi_part_file(const MultiPartInputFile &file)
 {
   Vector<ExrChannel> channels;
-  const ColorSpace *global_colorspace = imb_exr_part_colorspace(file.header(0));
+  const ColorSpace *global_colorspace = imb_exr_part_colorspace(imb_exr_colorspace_header(file));
 
   /* Get channels from each part. */
   for (int p = 0; p < file.parts(); p++) {
@@ -2055,9 +2102,9 @@ static const char *exr_unknown_channel_name(MultiPartInputFile &file)
   return header.channels().begin().name();
 }
 
-static bool exr_is_half_float(MultiPartInputFile &file)
+static bool exr_is_half_float(const Header &header)
 {
-  const ChannelList &channels = file.header(0).channels();
+  const ChannelList &channels = header.channels();
   for (ChannelList::ConstIterator i = channels.begin(); i != channels.end(); ++i) {
     const Channel &channel = i.channel();
     if (channel.type != HALF) {
@@ -2193,6 +2240,26 @@ static const ColorSpace *imb_exr_part_colorspace(const Header &header)
   ImFileColorSpace colorspace;
   imb_exr_set_known_colorspace(header, colorspace);
   return IMB_colormanagement_space_get_named(colorspace.metadata_colorspace);
+}
+
+static const Header &imb_exr_colorspace_header(const MultiPartInputFile &file)
+{
+  /* For multi-part files, find the first header with a non-data colorspace,
+   * and use that as the colorspace for all color passes.
+   *
+   * The color interop forum recommendation say the colorInteropID of later
+   * parts should not be different than the first part, except if it's missing
+   * or set to data. This fits for Blender image datablocks, which also have
+   * one colorspace but individual passes may be marked as data. */
+  for (int p = 0; p < file.parts(); p++) {
+    const ColorSpace *colorspace = imb_exr_part_colorspace(file.header(p));
+    if (colorspace && !IMB_colormanagement_space_is_data(colorspace)) {
+      return file.header(p);
+    }
+  }
+
+  /* No representative colorspace found, fall back to the first header. */
+  return file.header(0);
 }
 
 static bool exr_get_ppm(MultiPartInputFile &file, double ppm[2])
@@ -2344,15 +2411,16 @@ ImBuf *imb_load_openexr(const uchar *mem,
 
     {
       const bool is_alpha = exr_has_alpha(*file);
+      const Header &colorspace_header = imb_exr_colorspace_header(*file);
 
       ibuf = IMB_allocImBuf(width, height, ImBufFlags::Zero);
       ibuf->color_mode = is_alpha ? ImColorMode::RGBA : ImColorMode::RGB;
-      ibuf->foptions.flag |= exr_is_half_float(*file) ? OPENEXR_HALF : 0;
-      ibuf->foptions.flag |= openexr_header_get_compression(file_header);
+      ibuf->foptions.flag |= exr_is_half_float(colorspace_header) ? OPENEXR_HALF : 0;
+      ibuf->foptions.flag |= openexr_header_get_compression(colorspace_header);
 
       imb_exr_set_ibuf_display_window(*file, ibuf);
 
-      imb_exr_set_known_colorspace(file_header, r_colorspace);
+      imb_exr_set_known_colorspace(colorspace_header, r_colorspace);
 
       ibuf->ftype = IMB_FTYPE_OPENEXR;
 
@@ -2371,6 +2439,10 @@ ImBuf *imb_load_openexr(const uchar *mem,
 
           IDProperty *metadata = ibuf->metadata_for_write();
           for (iter = file_header.begin(); iter != file_header.end(); iter++) {
+            if (openexr_metadata_skip_read(iter.name(), is_multi)) {
+              continue;
+            }
+
             const StringAttribute *attr = file_header.findTypedAttribute<StringAttribute>(
                 iter.name());
 

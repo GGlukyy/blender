@@ -30,7 +30,7 @@ namespace blender {
 
 namespace compositor {
 class RenderContext;
-enum class NodeGroupOutputTypes : uint8_t;
+enum class SideEffectOutputTypes : uint8_t;
 }  // namespace compositor
 
 struct bNodeTree;
@@ -129,9 +129,11 @@ struct Render : public BaseRender {
   /* True if result has GPU textures, to quickly skip cache clear. */
   bool result_has_gpu_texture_caches = false;
 
-  /** Window size, display rect, viewplane.
+  /**
+   * Window size, display rect, viewplane.
    * \note Buffer width and height with percentage applied
-   * without border & crop. convert to long before multiplying together to avoid overflow. */
+   * without border & crop. convert to long before multiplying together to avoid overflow.
+   */
   int winx = 0, winy = 0;
   rcti disprect = {0, 0, 0, 0};  /* part within winx winy */
   rctf viewplane = {0, 0, 0, 0}; /* mapped on winx winy */
@@ -191,7 +193,7 @@ struct RenderDisplay {
   void ensure_system_gpu_context();
   void *ensure_blender_gpu_context();
 
-  void display_update(RenderResult *render_result, rcti *rect);
+  void display_update(RenderResult *render_result);
   void current_scene_update(struct Scene *scene);
 
   void stats_draw(RenderStats *render_stats);
@@ -203,7 +205,7 @@ struct RenderDisplay {
   bool test_break();
 
   /* Callbacks */
-  void (*display_update_cb)(void *handle, RenderResult *rr, rcti *rect) = nullptr;
+  void (*display_update_cb)(void *handle, RenderResult *rr) = nullptr;
   void *duh = nullptr;
   void (*current_scene_update_cb)(void *handle, struct Scene *scene) = nullptr;
   void *suh = nullptr;

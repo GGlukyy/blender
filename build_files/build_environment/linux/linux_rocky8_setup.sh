@@ -18,6 +18,9 @@ ARCH=$(uname -i)
 # Required by: config manager command below to enable powertools.
 dnf -y install 'dnf-command(config-manager)'
 
+# Required for version locking CUDA installation
+dnf -y install 'dnf-command(versionlock)'
+
 # Packages `ninja-build` and `meson` are not available unless CBR or PowerTools repositories are enabled.
 # See: https://wiki.rockylinux.org/rocky/repo/#notes-on-unlisted-repositories
 dnf config-manager --set-enabled powertools
@@ -40,8 +43,18 @@ dnf -y install gcc-toolset-14
 if [ "$ARCH" = "aarch64" ]; then
     CUDA_ARCH="sbsa"
 fi
-# Repository for CUDA (`nvcc`).
+# Repository for CUDA (`nvcc`)
 dnf config-manager --add-repo http://developer.download.nvidia.com/compute/cuda/repos/rhel8/${CUDA_ARCH-x86_64}/cuda-rhel8.repo
+# Version lock CUDA install/update candidates to 12.8
+dnf versionlock add 'cuda-*-12-8*'
+
+# Install cmake manually as they version we need is not in the rocky8 package repos.
+# Go back to using the package manager with rocky9
+dnf -y install wget
+wget https://github.com/Kitware/CMake/releases/download/v3.31.12/cmake-3.31.12-linux-${ARCH}.sh
+chmod +x cmake-3.31.12-linux-${ARCH}.sh
+./cmake-3.31.12-linux-${ARCH}.sh --prefix=/usr --skip-license
+rm -f cmake-3.31.12-linux-${ARCH}.sh
 
 # Install packages needed for Blender's dependencies.
 PACKAGES_FOR_LIBS=(
@@ -53,7 +66,7 @@ PACKAGES_FOR_LIBS=(
     # Used to extract packages.
     tar
     # Blender and some dependencies use `cmake`.
-    cmake3
+    #cmake3
     # Apply patches from Blender's: `./build_files/build_environment/patches`
     patch
     # Use by `cmake` and `autoconf`.
@@ -64,7 +77,7 @@ PACKAGES_FOR_LIBS=(
     automake
     libtool
 
-    # Requried by flex
+    # Required by flex
     help2man
 
     # Required by: `external_libsndfile` configure scripts.

@@ -19,6 +19,7 @@
 #include "BLI_math_rotation_c.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_set.hh"
+#include "BLI_vector.hh"
 
 #include "BKE_action.hh"
 #include "BKE_armature.hh"
@@ -110,7 +111,7 @@ static void update_deg_with_temporary_ik(Main *bmain, Object *ob)
 
 static bKinematicConstraint *has_targetless_ik(bPoseChannel *pchan)
 {
-  bConstraint *con = static_cast<bConstraint *>(pchan->constraints.first);
+  bConstraint *con = pchan->constraints.first();
 
   for (; con; con = con->next) {
     if (con->type == CONSTRAINT_TYPE_KINEMATIC && (con->flag & CONSTRAINT_OFF) == 0 &&
@@ -132,7 +133,7 @@ static bKinematicConstraint *has_targetless_ik(bPoseChannel *pchan)
 /**
  * Adds the IK to pchan - returns if added.
  */
-static short pose_grab_with_ik_add(bke::PChanBone pchanbone)
+static short pose_grab_with_ik_add(Object &ob, bke::PChanBone pchanbone)
 {
   bPoseChannel *pchan = pchanbone.pchan;
   bKinematicConstraint *targetless = nullptr;
@@ -213,8 +214,10 @@ static short pose_grab_with_ik_add(bke::PChanBone pchanbone)
     /* Now we count this pchan as being included. */
     data->rootbone++;
 
+    /* We modify the pchan pointer below so we also have to get the corresponding bone pointer. */
+    Bone *bone = pchan->bone_get(ob);
     /* Continue to parent, but only if we're connected to it. */
-    if (pchanbone.bone->flag & BONE_CONNECTED) {
+    if (bone->flag & BONE_CONNECTED) {
       pchan = pchan->parent;
     }
     else {
@@ -231,7 +234,7 @@ static short pose_grab_with_ik_add(bke::PChanBone pchanbone)
 /**
  * Bone is a candidate to get IK, but we don't do it if it has children connected.
  */
-static short pose_grab_with_ik_children(bPose *pose, Bone *bone)
+static short pose_grab_with_ik_children(Object &ob, Bone *bone)
 {
   short wentdeeper = 0, added = 0;
 
@@ -239,13 +242,13 @@ static short pose_grab_with_ik_children(bPose *pose, Bone *bone)
   for (Bone &bonec : bone->childbase) {
     if (bonec.flag & BONE_CONNECTED) {
       wentdeeper = 1;
-      added += pose_grab_with_ik_children(pose, &bonec);
+      added += pose_grab_with_ik_children(ob, &bonec);
     }
   }
   if (wentdeeper == 0) {
-    bPoseChannel *pchan = BKE_pose_channel_find_name(pose, bone->name);
+    bPoseChannel *pchan = BKE_pose_channel_find_name(ob.pose, bone->name);
     if (pchan) {
-      added += pose_grab_with_ik_add({pchan, bone});
+      added += pose_grab_with_ik_add(ob, {pchan, bone});
     }
   }
 
@@ -273,8 +276,7 @@ static short pose_grab_with_ik(Main *bmain, Object *ob)
     if (BKE_pose_is_bonecoll_visible(arm, &pchan)) {
       if ((pchan.flag & POSE_SELECTED) || (pchan_bone->flag & BONE_TRANSFORM_MIRROR)) {
         /* Rule: no IK for solitary (unconnected) bones. */
-        for (bonec = static_cast<Bone *>(pchan_bone->childbase.first); bonec; bonec = bonec->next)
-        {
+        for (bonec = pchan_bone->childbase.first(); bonec; bonec = bonec->next) {
           if (bonec->flag & BONE_CONNECTED) {
             break;
           }
@@ -295,12 +297,12 @@ static short pose_grab_with_ik(Main *bmain, Object *ob)
             }
           }
           if (parent == nullptr) {
-            tot_ik += pose_grab_with_ik_add({&pchan, pchan_bone});
+            tot_ik += pose_grab_with_ik_add(*ob, {&pchan, pchan_bone});
           }
         }
         else {
           /* Rule: go over the children and add IK to the tips. */
-          tot_ik += pose_grab_with_ik_children(ob->pose, pchan_bone);
+          tot_ik += pose_grab_with_ik_children(*ob, pchan_bone);
         }
       }
     }
@@ -568,7 +570,7 @@ static void add_pose_transdata(
   }
 
   /* Store reference to first constraint. */
-  td->con = static_cast<bConstraint *>(pchan->constraints.first);
+  td->con = pchan->constraints.first();
 }
 
 static void free_pose_transdata(TransInfo *t, TransDataContainer *tc, TransCustomData *custom_data)
@@ -780,6 +782,14 @@ static void createTransPose(bContext * /*C*/, TransInfo *t)
   }
 }
 
+static void free_bone_init_data(TransInfo * /*t*/,
+                                TransDataContainer * /*tc*/,
+                                TransCustomData *custom_data)
+{
+  MEM_delete(static_cast<Vector<BoneInitData> *>(custom_data->data));
+  custom_data->data = nullptr;
+}
+
 static void createTransArmatureVerts(bContext * /*C*/, TransInfo *t)
 {
   t->data_len_all = 0;
@@ -827,13 +837,11 @@ static void createTransArmatureVerts(bContext * /*C*/, TransInfo *t)
     }
 
     if (mirror) {
-      BoneInitData *bid = MEM_new_array_uninitialized<BoneInitData>((total_mirrored + 1),
-                                                                    "BoneInitData");
-
-      /* Trick to terminate iteration. */
-      bid[total_mirrored].bone = nullptr;
+      Vector<BoneInitData> *bid = MEM_new<Vector<BoneInitData>>(__func__);
+      bid->reserve(total_mirrored);
 
       tc->custom.type.data = bid;
+      tc->custom.type.free_cb = free_bone_init_data;
       tc->custom.type.use_free = true;
     }
     t->data_len_all += tc->data_len;
@@ -852,13 +860,12 @@ static void createTransArmatureVerts(bContext * /*C*/, TransInfo *t)
     TransData *td, *td_old;
     float mtx[3][3], smtx[3][3], bonemat[3][3];
     bool mirror = ((arm->flag & ARM_MIRROR_EDIT) != 0);
-    BoneInitData *bid = static_cast<BoneInitData *>(tc->custom.type.data);
+    auto &bid = *static_cast<Vector<BoneInitData> *>(tc->custom.type.data);
 
     copy_m3_m4(mtx, tc->obedit->object_to_world().ptr());
     pseudoinverse_m3_m3(smtx, mtx, PSEUDOINVERSE_EPSILON);
 
     td = tc->data = MEM_new_array_zeroed<TransData>(tc->data_len, "TransEditBone");
-    int i = 0;
 
     for (EditBone &ebo : *edbo) {
       td_old = td;
@@ -999,24 +1006,19 @@ static void createTransArmatureVerts(bContext * /*C*/, TransInfo *t)
       if (mirror && (td_old != td)) {
         EditBone *eboflip = ED_armature_ebone_get_mirrored(arm->edbo, &ebo);
         if (eboflip) {
-          bid[i].bone = eboflip;
-          bid[i].dist = eboflip->dist;
-          bid[i].rad_head = eboflip->rad_head;
-          bid[i].rad_tail = eboflip->rad_tail;
-          bid[i].roll = eboflip->roll;
-          bid[i].xwidth = eboflip->xwidth;
-          bid[i].zwidth = eboflip->zwidth;
-          copy_v3_v3(bid[i].head, eboflip->head);
-          copy_v3_v3(bid[i].tail, eboflip->tail);
-          i++;
+          BoneInitData bone_data{};
+          bone_data.bone = eboflip;
+          bone_data.dist = eboflip->dist;
+          bone_data.rad_head = eboflip->rad_head;
+          bone_data.rad_tail = eboflip->rad_tail;
+          bone_data.roll = eboflip->roll;
+          bone_data.xwidth = eboflip->xwidth;
+          bone_data.zwidth = eboflip->zwidth;
+          copy_v3_v3(bone_data.head, eboflip->head);
+          copy_v3_v3(bone_data.tail, eboflip->tail);
+          bid.append(bone_data);
         }
       }
-    }
-
-    if (mirror) {
-      /* Trick to terminate iteration. */
-      BLI_assert(i + 1 == (MEM_allocN_len(bid) / sizeof(*bid)));
-      bid[i].bone = nullptr;
     }
   }
 }
@@ -1030,8 +1032,7 @@ static void createTransArmatureVerts(bContext * /*C*/, TransInfo *t)
 static void restoreBones(TransDataContainer *tc)
 {
   bArmature *arm;
-  BoneInitData *bid = static_cast<BoneInitData *>(tc->custom.type.data);
-  EditBone *ebo;
+  auto &bid = *static_cast<Vector<BoneInitData> *>(tc->custom.type.data);
 
   if (tc->obedit) {
     arm = id_cast<bArmature *>(tc->obedit->data);
@@ -1041,17 +1042,17 @@ static void restoreBones(TransDataContainer *tc)
     arm = id_cast<bArmature *>(tc->poseobj->data);
   }
 
-  while (bid->bone) {
-    ebo = bid->bone;
+  for (const BoneInitData &init : bid) {
+    EditBone *ebo = init.bone;
 
-    ebo->dist = bid->dist;
-    ebo->rad_head = bid->rad_head;
-    ebo->rad_tail = bid->rad_tail;
-    ebo->roll = bid->roll;
-    ebo->xwidth = bid->xwidth;
-    ebo->zwidth = bid->zwidth;
-    copy_v3_v3(ebo->head, bid->head);
-    copy_v3_v3(ebo->tail, bid->tail);
+    ebo->dist = init.dist;
+    ebo->rad_head = init.rad_head;
+    ebo->rad_tail = init.rad_tail;
+    ebo->roll = init.roll;
+    ebo->xwidth = init.xwidth;
+    ebo->zwidth = init.zwidth;
+    copy_v3_v3(ebo->head, init.head);
+    copy_v3_v3(ebo->tail, init.tail);
 
     if (arm->flag & ARM_MIRROR_EDIT) {
       /* Also move connected ebo_child, in case ebo_child's name aren't mirrored properly. */
@@ -1069,8 +1070,6 @@ static void restoreBones(TransDataContainer *tc)
         parent->rad_tail = ebo->rad_head;
       }
     }
-
-    bid++;
   }
 }
 
@@ -1461,6 +1460,7 @@ static void recalcData_pose(TransInfo *t)
     }
   }
   else {
+    Set<Object *> motionpath_updates;
     FOREACH_TRANS_DATA_CONTAINER (t, tc) {
       Object *ob = tc->poseobj;
       bPose *pose = ob->pose;
@@ -1492,7 +1492,22 @@ static void recalcData_pose(TransInfo *t)
         autokeyframe_pose(t->context, t->scene, ob, targetless_ik, t->mode, t->data_len_all > 1);
       }
 
+      if (motionpath_need_update_pose(t->scene, ob)) {
+        motionpath_updates.add(ob);
+        /* We have to tag the pose for recalc so `animviz_build_motionpath_targets` will gather the
+         * targets. */
+        ob->pose->avs.recalc |= ANIMVIZ_RECALC_PATHS;
+      }
+
       DEG_id_tag_update(&ob->id, ID_RECALC_GEOMETRY);
+    }
+    if (!motionpath_updates.is_empty()) {
+      Depsgraph *evaluated_dg = CTX_data_ensure_evaluated_depsgraph(t->context);
+      Vector<MPathTarget> targets;
+      for (Object *ob : motionpath_updates) {
+        animviz_build_motionpath_targets(ob, targets);
+      }
+      animviz_update_motionpath_preview(*evaluated_dg, targets);
     }
   }
 }
@@ -1648,7 +1663,7 @@ static void pose_grab_with_ik_clear(Main *bmain, Object *ob)
     pchan.constflag &= ~(PCHAN_HAS_IK | PCHAN_HAS_NO_TARGET);
 
     /* Remove all temporary IK-constraints added. */
-    for (con = static_cast<bConstraint *>(pchan.constraints.first); con; con = next) {
+    for (con = pchan.constraints.first(); con; con = next) {
       next = con->next;
       if (con->type == CONSTRAINT_TYPE_KINEMATIC) {
         data = static_cast<bKinematicConstraint *>(con->data);
@@ -1748,14 +1763,21 @@ static void special_aftertrans_update__pose(bContext *C, TransInfo *t)
 
       if (t->mode != TFM_DUMMY && motionpath_need_update_pose(t->scene, ob)) {
         motionpath_updates.add(ob);
+        ob->pose->avs.recalc |= ANIMVIZ_RECALC_PATHS;
       }
     }
     if (!canceled) {
       /* Update motion paths once for all transformed bones in an object. */
       for (Object *ob : motionpath_updates) {
-        ED_pose_recalculate_paths(C, t->scene, ob, ANIMVIZ_CALC_RANGE_CHANGED);
+        ED_pose_recalculate_paths(C, t->scene, ob);
       }
     }
+
+    Vector<MPathTarget> targets;
+    for (Object *ob : motionpath_updates) {
+      animviz_build_motionpath_targets(ob, targets);
+    }
+    animviz_clear_motionpath_preview(targets);
   }
 }
 

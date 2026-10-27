@@ -226,7 +226,14 @@ static PyObject *C_Vector_Fill(PyObject *cls, PyObject *args)
   int vec_num;
   float fill = 0.0f;
 
-  if (!PyArg_ParseTuple(args, "i|f:Vector.Fill", &vec_num, &fill)) {
+  if (!PyArg_ParseTuple(args,
+                        "i" /* `size` */
+                        "|" /* Optional arguments. */
+                        "f" /* `fill` */
+                        ":Vector.Fill",
+                        &vec_num,
+                        &fill))
+  {
     return nullptr;
   }
 
@@ -274,7 +281,16 @@ static PyObject *C_Vector_Range(PyObject *cls, PyObject *args)
   int start = 0;
   int step = 1;
 
-  if (!PyArg_ParseTuple(args, "i|ii:Vector.Range", &start, &stop, &step)) {
+  if (!PyArg_ParseTuple(args,
+                        "i" /* `start` */
+                        "|" /* Optional arguments. */
+                        "i" /* `stop` */
+                        "i" /* `step` */
+                        ":Vector.Range",
+                        &start,
+                        &stop,
+                        &step))
+  {
     return nullptr;
   }
 
@@ -356,7 +372,15 @@ static PyObject *C_Vector_Linspace(PyObject *cls, PyObject *args)
   int vec_num;
   float start, end, step;
 
-  if (!PyArg_ParseTuple(args, "ffi:Vector.Linspace", &start, &end, &vec_num)) {
+  if (!PyArg_ParseTuple(args,
+                        "f" /* `start` */
+                        "f" /* `stop` */
+                        "i" /* `size` */
+                        ":Vector.Linspace",
+                        &start,
+                        &end,
+                        &vec_num))
+  {
     return nullptr;
   }
 
@@ -401,7 +425,13 @@ static PyObject *C_Vector_Repeat(PyObject *cls, PyObject *args)
   int i, vec_num, value_num;
   PyObject *value;
 
-  if (!PyArg_ParseTuple(args, "Oi:Vector.Repeat", &value, &vec_num)) {
+  if (!PyArg_ParseTuple(args,
+                        "O" /* `vector` */
+                        "i" /* `size` */
+                        ":Vector.Repeat",
+                        &value,
+                        &vec_num))
+  {
     return nullptr;
   }
 
@@ -607,8 +637,11 @@ static PyObject *Vector_resized(VectorObject *self, PyObject *value)
     return nullptr;
   }
 
-  std::fill_n(vec, vec_num, 0.0f);
-  memcpy(vec, self->vec, self->vec_num * sizeof(float));
+  const int vec_num_copy = std::min(self->vec_num, vec_num);
+  memcpy(vec, self->vec, vec_num_copy * sizeof(float));
+  if (vec_num_copy != vec_num) {
+    std::fill_n(vec + vec_num_copy, vec_num - vec_num_copy, 0.0f);
+  }
 
   return Vector_CreatePyObject_alloc(vec, vec_num, nullptr);
 }
@@ -784,7 +817,12 @@ static PyObject *Vector_to_tuple(VectorObject *self, PyObject *args)
 {
   int ndigits = -1;
 
-  if (!PyArg_ParseTuple(args, "|i:to_tuple", &ndigits)) {
+  if (!PyArg_ParseTuple(args,
+                        "|" /* Optional arguments. */
+                        "i" /* `precision` */
+                        ":to_tuple",
+                        &ndigits))
+  {
     return nullptr;
   }
 
@@ -828,7 +866,14 @@ static PyObject *Vector_to_track_quat(VectorObject *self, PyObject *args)
   const char *sup = nullptr;
   short track = 2, up = 1;
 
-  if (!PyArg_ParseTuple(args, "|ss:to_track_quat", &strack, &sup)) {
+  if (!PyArg_ParseTuple(args,
+                        "|" /* Optional arguments. */
+                        "s" /* `track` */
+                        "s" /* `up` */
+                        ":to_track_quat",
+                        &strack,
+                        &sup))
+  {
     return nullptr;
   }
 
@@ -1158,7 +1203,14 @@ static PyObject *Vector_angle(VectorObject *self, PyObject *args)
   int x;
   PyObject *fallback = nullptr;
 
-  if (!PyArg_ParseTuple(args, "O|O:angle", &value, &fallback)) {
+  if (!PyArg_ParseTuple(args,
+                        "O" /* `other` */
+                        "|" /* Optional arguments. */
+                        "O" /* `fallback` */
+                        ":angle",
+                        &value,
+                        &fallback))
+  {
     return nullptr;
   }
 
@@ -1229,7 +1281,14 @@ static PyObject *Vector_angle_signed(VectorObject *self, PyObject *args)
   PyObject *value;
   PyObject *fallback = nullptr;
 
-  if (!PyArg_ParseTuple(args, "O|O:angle_signed", &value, &fallback)) {
+  if (!PyArg_ParseTuple(args,
+                        "O" /* `other` */
+                        "|" /* Optional arguments. */
+                        "O" /* `fallback` */
+                        ":angle_signed",
+                        &value,
+                        &fallback))
+  {
     return nullptr;
   }
 
@@ -1386,7 +1445,13 @@ static PyObject *Vector_lerp(VectorObject *self, PyObject *args)
   float fac;
   float *tvec;
 
-  if (!PyArg_ParseTuple(args, "Of:lerp", &value, &fac)) {
+  if (!PyArg_ParseTuple(args,
+                        "O" /* `other` */
+                        "f" /* `factor` */
+                        ":lerp",
+                        &value,
+                        &fac))
+  {
     return nullptr;
   }
 
@@ -1438,7 +1503,16 @@ static PyObject *Vector_slerp(VectorObject *self, PyObject *args)
   int x;
   PyObject *fallback = nullptr;
 
-  if (!PyArg_ParseTuple(args, "Of|O:slerp", &value, &fac, &fallback)) {
+  if (!PyArg_ParseTuple(args,
+                        "O" /* `other` */
+                        "f" /* `factor` */
+                        "|" /* Optional arguments. */
+                        "O" /* `fallback` */
+                        ":slerp",
+                        &value,
+                        &fac,
+                        &fallback))
+  {
     return nullptr;
   }
 
@@ -2906,8 +2980,9 @@ static int Vector_swizzle_set(VectorObject *self, PyObject *value, void *closure
 
   /* We must first copy current vec into tvec, else some org values may be lost.
    * See #31760.
-   * Assuming self->vec_num can't be higher than MAX_DIMENSIONS! */
-  memcpy(tvec, self->vec, self->vec_num * sizeof(float));
+   * Swizzle axes are limited to #MAX_DIMENSIONS, values after them are left as-is. */
+  const int tvec_num = std::min(self->vec_num, MAX_DIMENSIONS);
+  memcpy(tvec, self->vec, tvec_num * sizeof(float));
 
   while (swizzleClosure & SWIZZLE_VALID_AXIS) {
     axis_to = swizzleClosure & SWIZZLE_AXIS;
@@ -2918,7 +2993,7 @@ static int Vector_swizzle_set(VectorObject *self, PyObject *value, void *closure
 
   /* We must copy back the whole tvec into vec, else some changes may be lost (e.g. xz...).
    * See #31760. */
-  memcpy(self->vec, tvec, self->vec_num * sizeof(float));
+  memcpy(self->vec, tvec, tvec_num * sizeof(float));
   /* continue with BaseMathObject_WriteCallback at the end */
 
   if (BaseMath_WriteCallback(self) == -1) {
@@ -3696,8 +3771,7 @@ PyObject *Vector_CreatePyObject_cb(PyObject *cb_user, int vec_num, uchar cb_type
   VectorObject *self = reinterpret_cast<VectorObject *>(
       Vector_CreatePyObject(nullptr, vec_num, nullptr));
   if (self) {
-    Py_INCREF(cb_user);
-    self->cb_user = cb_user;
+    self->cb_user = Py_NewRef(cb_user);
     self->cb_type = cb_type;
     self->cb_subtype = cb_subtype;
     BLI_assert(!PyObject_GC_IsTracked((PyObject *)self));

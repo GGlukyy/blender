@@ -290,7 +290,7 @@ static void spreadsheet_filter_panel_draw(const bContext *C, Panel *panel)
     case SPREADSHEET_VALUE_TYPE_QUATERNION:
     case SPREADSHEET_VALUE_TYPE_FLOAT4X4:
     case SPREADSHEET_VALUE_TYPE_BUNDLE_ITEM:
-      layout.label(IFACE_("Unsupported column type"), ICON_ERROR);
+      layout.label(IFACE_("Unsupported column type"), ICON_STATUS_ERROR);
       break;
   }
 }
@@ -326,7 +326,7 @@ static void spreadsheet_row_filters_layout(const bContext *C, Panel *panel)
   }
   else {
     /* Assuming there's only one group of instanced panels, update the custom data pointers. */
-    Panel *panel_iter = static_cast<Panel *>(region->panels.first);
+    Panel *panel_iter = region->panels.first();
     for (SpreadsheetRowFilter &row_filter : *row_filters) {
 
       /* Move to the next instanced panel corresponding to the next filter. */

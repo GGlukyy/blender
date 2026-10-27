@@ -7,6 +7,7 @@
 #include "fast_float.h"
 
 #include "node_function_util.hh"
+#include "node_shader_util.hh"
 
 #include "NOD_rna_define.hh"
 #include "NOD_socket_search_link.hh"
@@ -133,8 +134,8 @@ static void node_layout(ui::Layout &layout, bContext *, PointerRNA *ptr)
 static void node_rna(StructRNA *srna)
 {
   static const EnumPropertyItem data_types[] = {
-      {SOCK_FLOAT, "FLOAT", ICON_NODE_SOCKET_FLOAT, "Float", "Floating-point value"},
-      {SOCK_INT, "INT", ICON_NODE_SOCKET_INT, "Integer", "32-bit integer"},
+      {SOCK_FLOAT, "FLOAT", ICON_NODE_SOCKET_FLOAT, N_("Float"), N_("Floating-point value")},
+      {SOCK_INT, "INT", ICON_NODE_SOCKET_INT, N_("Integer"), N_("32-bit integer")},
       {0, nullptr, 0, nullptr, nullptr}};
 
   RNA_def_node_enum(srna,
@@ -150,7 +151,7 @@ static void node_register()
 {
   static bke::bNodeType ntype;
 
-  fn_cmp_node_type_base(&ntype, "FunctionNodeStringToValue"_ustr);
+  common_node_type_base(&ntype, "FunctionNodeStringToValue"_ustr);
   ntype.ui_name = "String to Value";
   ntype.ui_description = "Derive a numeric value from a given string representation";
   ntype.nclass = NODE_CLASS_CONVERTER;

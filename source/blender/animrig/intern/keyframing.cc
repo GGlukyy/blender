@@ -21,7 +21,7 @@
 
 #include "BKE_action.hh"
 #include "BKE_anim_data.hh"
-#include "BKE_animsys.h"
+#include "BKE_animsys.hh"
 #include "BKE_fcurve.hh"
 #include "BKE_idtype.hh"
 #include "BKE_lib_id.hh"
@@ -435,7 +435,7 @@ SingleKeyingResult insert_keyframe_direct(PointerRNA &ptr,
                                           const eBezTriple_KeyframeType keytype,
                                           const eInsertKeyFlags flag)
 {
-  if ((ptr.owner_id == nullptr) && (ptr.data == nullptr)) {
+  if (!ptr) {
     BLI_assert_unreachable();
     return SingleKeyingResult::UNKNOWN_FAILURE;
   }
@@ -604,7 +604,7 @@ int clear_keyframe(Main *bmain, ReportList *reports, ID *id, const RNAPath &rna_
       if (rna_path.index.has_value() && rna_path.index.value() != fcurve.array_index) {
         return;
       }
-      if (rna_path.path != fcurve.rna_path) {
+      if (rna_path.path != fcurve.rna_path()) {
         return;
       }
       fcurves.append(&fcurve);
@@ -739,6 +739,11 @@ CombinedKeyingResult insert_keyframes(Main *bmain,
   ID *id = struct_pointer->owner_id;
   PointerRNA id_pointer = RNA_id_pointer_create(id);
   CombinedKeyingResult combined_result;
+
+  if (!BKE_id_is_editable(bmain, id)) {
+    combined_result.add(SingleKeyingResult::ID_NOT_EDITABLE, rna_paths.size());
+    return combined_result;
+  }
 
   /* Init animdata if none available yet. */
   AnimData *adt = BKE_animdata_ensure_id(id);

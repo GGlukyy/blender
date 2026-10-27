@@ -81,7 +81,6 @@ static ft_pix blf_font_height_max_ft_pix(FontBLF *font);
 static ft_pix blf_font_width_max_ft_pix(FontBLF *font);
 
 /* -------------------------------------------------------------------- */
-
 /** \name FreeType Caching
  * \{ */
 
@@ -428,6 +427,17 @@ BLI_INLINE GlyphBLF *blf_glyph_from_utf8_and_step(FontBLF *font,
 }
 
 /**
+ * A combining character, drawn over the previous base glyph.
+ *
+ * Detected when the glyph is added to the cache, see #GlyphFlagBLF::Combining.
+ * See also: `vfont_char_is_combining` which also uses this logic.
+ */
+BLI_INLINE bool blf_glyph_is_combining(const GlyphBLF *g)
+{
+  return flag_is_set(g->flags, GlyphFlagBLF::Combining);
+}
+
+/**
  * State for stepping through glyphs in a UTF8 string.
  * Handles combining character positioning and kerning.
  */
@@ -463,7 +473,7 @@ BLI_INLINE bool blf_glyph_step(
   step.g = blf_glyph_from_utf8_and_step(
       font, gc, step.g_kerning, str, str_len, &step.i, &step.pen_x_right);
   if (step.g != nullptr) {
-    if (step.g->advance_x != 0) {
+    if (!blf_glyph_is_combining(step.g)) {
       /* Common case, advancing to the next character. */
       step.pen_x_base = step.pen_x_right;
       step.pen_x = step.pen_x_right;
@@ -619,13 +629,16 @@ void blf_font_draw(FontBLF *font, const char *str, const size_t str_len, ResultB
   blf_glyph_cache_release(font);
 }
 
-int blf_font_draw_mono(
-    FontBLF *font, const char *str, const size_t str_len, const int cwidth, const int tab_columns)
+int blf_font_draw_mono(FontBLF *font,
+                       const char *str,
+                       const size_t str_len,
+                       const int char_width,
+                       const int tab_columns)
 {
   GlyphBLF *g;
   int columns = 0;
   ft_pix pen_x = 0, pen_y = 0;
-  ft_pix cwidth_fpx = ft_pix_from_int(cwidth);
+  ft_pix char_width_fpx = ft_pix_from_int(char_width);
 
   size_t i = 0;
 
@@ -645,7 +658,7 @@ int blf_font_draw_mono(
     const int col = UNLIKELY(g->c == '\t') ? (tab_columns - (columns % tab_columns)) :
                                              BLI_wcwidth_safe(char32_t(g->c));
     columns += col;
-    pen_x += cwidth_fpx * col;
+    pen_x += char_width_fpx * col;
   }
 
   blf_batch_draw_end();
@@ -976,14 +989,14 @@ size_t blf_font_width_to_strlen(
   const int width_i = width;
 
   while ((step.i < str_len) && str[step.i]) {
-    i_prev = step.i;
-    width_new = step.pen_x_right;
     if (!blf_glyph_step(font, gc, step, str, str_len)) {
       continue;
     }
     if (ft_pix_to_int(step.pen_x_right) >= width_i) {
       break;
     }
+    i_prev = step.i;
+    width_new = step.pen_x_right;
   }
 
   if (r_width) {
@@ -1029,7 +1042,8 @@ size_t blf_font_width_to_rstrlen(
                (blf_str_is_utf8_valid_lazy_init(str, str_len, is_utf8_valid) == 0));
 
     /* Skip kerning when the left-neighbor is a combining character. */
-    const GlyphBLF *g_prev_kerning = (g_prev && g_prev->advance_x != 0) ? g_prev : nullptr;
+    const GlyphBLF *g_prev_kerning = (g_prev && !blf_glyph_is_combining(g_prev)) ? g_prev :
+                                                                                   nullptr;
     if (blf_font_width_to_strlen_glyph_process(font, gc, g_prev_kerning, g, &pen_x, width)) {
       break;
     }
@@ -1225,7 +1239,7 @@ void blf_font_boundbox_foreach_glyph(FontBLF *font,
     if (!blf_glyph_step(font, gc, step, str, str_len)) {
       continue;
     }
-    if (step.g->advance_x == 0) [[unlikely]] {
+    if (blf_glyph_is_combining(step.g)) [[unlikely]] {
       /* Ignore combining characters like diacritical marks. */
       continue;
     }
@@ -1466,7 +1480,6 @@ static void blf_font_wrap_apply(FontBLF *font,
      * like `\n` still drive wrapping. `step.i` is always advanced by `blf_glyph_step`. */
     blf_glyph_step(font, gc, step, str, str_len);
 
-    const ft_pix advance_x = step.g ? step.g->advance_x : 0;
     const uint codepoint = BLI_str_utf8_as_unicode_safe(&str[i_curr]);
     const uint codepoint_prev = g_prev ? g_prev->c : 0;
 
@@ -1486,7 +1499,9 @@ static void blf_font_wrap_apply(FontBLF *font,
     if (overflows && (wrap.start != wrap.last[0])) [[unlikely]] {
       do_draw = true;
     }
-    else if (bool(mode & BLFWrapMode::HardLimit) && overflows && (advance_x != 0)) [[unlikely]] {
+    else if (bool(mode & BLFWrapMode::HardLimit) && overflows && !blf_glyph_is_combining(step.g))
+        [[unlikely]]
+    {
       wrap.last[0] = i_curr;
       wrap.last[1] = i_curr;
       do_draw = true;

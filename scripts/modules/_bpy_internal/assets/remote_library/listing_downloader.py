@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 from __future__ import absolute_import, annotations
-import shutil
 
 __all__ = (
     'RemoteAssetListingLocator',
@@ -16,6 +15,7 @@ import copy
 import enum
 import functools
 import logging
+import shutil
 import unicodedata
 import urllib.parse
 from pathlib import Path, PurePosixPath, PurePath, PureWindowsPath
@@ -110,6 +110,37 @@ class RemoteAssetListingLocator:
     def listing_backup_path(self) -> Path:
         """Return the location used for temporary backups of the listing files."""
         return self.local_path / "_listing_backup"
+
+    @functools.lru_cache()
+    def is_system_path(self, some_path: Path) -> bool:
+        """Return whether the given path is part of the asset system.
+
+        This includes the asset listing directory structure, but also the SQLite file used to cache file hashes.
+        """
+        try:
+            some_path = some_path.resolve()
+        except OSError:
+            # If the path cannot be resolved, just use it as-is.
+            pass
+
+        if not some_path.is_relative_to(self.local_path):
+            return False
+
+        # Defined in source/blender/editors/asset/intern/asset_indexer_remote_file_status.cc:
+        if some_path.match("*/_file_hashes*.sqlite", case_sensitive=False):
+            return True
+
+        # Check paths that are known (prefixes to) paths used by the listing.
+        listing_paths = [
+            self.catalogs_file,
+            self.listing_backup_path,
+            self.local_path / listing_common.ASSET_TOP_METADATA_FILENAME,
+            self.local_path / listing_common.API_VERSIONED_SUBDIR,
+            self.local_path / listing_common.API_VERSIONED_SUBDIR,
+        ]
+        return any(
+            some_path.is_relative_to(listing_path)
+            for listing_path in listing_paths)
 
     def asset_download_path(self, asset_file: api_models.FileV1) -> Path:
         """Construct the absolute download path for this asset.
@@ -207,6 +238,7 @@ class RemoteAssetListingDownloader:
     def __init__(
         self,
         remote_url: str,
+        auth_token: str,
         local_path: Path | str,
         on_update_callback: OnUpdateCallback,
         on_done_callback: OnDoneCallback,
@@ -218,6 +250,8 @@ class RemoteAssetListingDownloader:
         :param remote_url: Base URL of the remote asset library server. See
            blender_asset_library_openapi.yaml for the files downloaded from
            there.
+
+        :param asset_library_auth_token: Optional authentication token for bearer authentication.
 
         :param local_path: The directory to download the index files to.
 
@@ -270,16 +304,20 @@ class RemoteAssetListingDownloader:
                 cache_location=self._locator.http_metadata_cache_location,
             ))
 
+        http_headers = {
+            'Accept': 'application/json',
+            'X-Blender': "{:d}.{:d}".format(*bpy.app.version),
+        }
+        if auth_token:
+            http_headers['Authorization'] = "Bearer {:s}".format(auth_token)
+
         # Create the background downloader object now, so that it
         # (hypothetically in some future) can be adjusted before the actual
         # downloading begins.
         self._bg_downloader = http_dl.BackgroundDownloader(
             options=http_dl.DownloaderOptions(
                 metadata_provider=self._http_metadata_provider,
-                http_headers={
-                    'Accept': 'application/json',
-                    'X-Blender': "{:d}.{:d}".format(*bpy.app.version),
-                },
+                http_headers=http_headers,
                 timeout=300,
                 max_disk_size_bytes=MAX_JSON_FILE_SIZE_MB * 1024 * 1024,
             ),
@@ -435,6 +473,9 @@ class RemoteAssetListingDownloader:
         # Meta files are ready to be picked up by the asset system.
         if self._on_metafiles_done_callback:
             self._on_metafiles_done_callback(self)
+
+        # There may not be any pages to download (empty library).
+        self._shutdown_if_done()
 
     def on_asset_page_downloaded(self,
                                  http_req_descr: http_dl.RequestDescription,
@@ -725,7 +766,7 @@ class RemoteAssetListingDownloader:
             return 0  # Deactivate the timer.
         except Exception:
             logger.exception(
-                "Unexpected error downloading remote asset library ilisting from %s to %s",
+                "Unexpected error downloading remote asset library listing from %s to %s",
                 self._locator.remote_url,
                 self._locator.local_path)
 
@@ -843,6 +884,7 @@ class RemoteAssetListingBackupper:
     def restore(self) -> None:
         """Restore a backup of the asset library's listing."""
         if not self.has_backup():
+            backup_path = self._locator.listing_backup_path
             logger.warning("Asset Listing backup did not exist, cannot restore: %s", backup_path)
             return
         self._restore()
@@ -928,11 +970,14 @@ def _sanitize_path_from_url(urlpath: PurePath | str) -> PurePosixPath:
 def _path_make_relative_safe(some_path: PurePath) -> PurePath:
     """Remove the root/anchor from the path, and remove '..' entries."""
 
+    # Keep stripping off parts until the path is directory-relative. Comparison to some_path.anchor is necessary for
+    # drive-relative paths to be correctly stripped on Windows: "\dir\file.txt" is not considered an absolute path by
+    # PureWindowsPath.is_absolute() because it's relative to the current drive, but for our purposes it's still not safe
+    # to use.
+    while some_path.is_absolute() or some_path.anchor:
+        some_path = some_path.with_segments(*some_path.parts[1:])
+
     parts = list(some_path.parts)
-
-    if some_path.is_absolute():
-        parts = parts[1:]
-
     i = 0
     while i < len(parts):
         if parts[i] != '..':

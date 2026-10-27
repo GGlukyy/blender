@@ -240,7 +240,7 @@ static bool uiTemplateInputStatus3DView(bContext *C, Layout *row)
 
   if (is_negative_m4(ob->object_to_world().ptr())) {
     row->separator(1.0f);
-    row->label("", ICON_ERROR);
+    row->label("", ICON_STATUS_WARNING_FILLED);
     row->separator(-0.2f);
     row->label(IFACE_("Active object has negative scale"), ICON_NONE);
     row->separator(0.5f, LayoutSeparatorType::Line);
@@ -252,7 +252,7 @@ static bool uiTemplateInputStatus3DView(bContext *C, Layout *row)
   if (!(fabsf(ob->scale[0] - ob->scale[1]) < 1e-4f && fabsf(ob->scale[1] - ob->scale[2]) < 1e-4f))
   {
     row->separator(1.0f);
-    row->label("", ICON_ERROR);
+    row->label("", ICON_STATUS_WARNING_FILLED);
     row->separator(-0.2f);
     row->label(IFACE_("Active object has non-uniform scale"), ICON_NONE);
     row->separator(0.5f, LayoutSeparatorType::Line);
@@ -394,7 +394,13 @@ static std::string template_status_tooltip(bContext *C, void * /*argN*/, const S
     tooltip_message += RPT_(
         "This file is managed by the Blender asset system and cannot be overridden");
   }
-  if (bmain->colorspace.is_missing_opencolorio_config) {
+  if (bmain->colorspace.is_failed_opencolorio_config) {
+    if (!tooltip_message.empty()) {
+      tooltip_message += "\n\n";
+    }
+    tooltip_message += RPT_("OpenColorIO configuration failed to load");
+  }
+  else if (bmain->colorspace.is_missing_opencolorio_config) {
     if (!tooltip_message.empty()) {
       tooltip_message += "\n\n";
     }
@@ -434,7 +440,7 @@ void uiTemplateStatusInfo(Layout *layout, bContext *C)
       }
       row.emboss_set(EmbossType::None);
       /* This operator also works fine for blocked extensions. */
-      row.op("EXTENSIONS_OT_userpref_show_for_update", "", ICON_ERROR);
+      row.op("EXTENSIONS_OT_userpref_show_for_update", "", ICON_STATUS_WARNING_FILLED);
       Button *but = layout->block()->buttons_ptrs.last().get();
       uchar color[4];
       theme::get_color_4ubv(TH_TEXT, color);
@@ -589,7 +595,7 @@ void uiTemplateStatusInfo(Layout *layout, bContext *C)
   /* The warning icon itself. */
   but = uiDefIconBut(block,
                      ButtonType::But,
-                     ICON_ERROR,
+                     ICON_STATUS_WARNING_FILLED,
                      int(3 * UI_SCALE_FAC),
                      0,
                      UI_UNIT_X,

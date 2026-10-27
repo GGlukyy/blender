@@ -165,6 +165,7 @@ MINLINE void madd_v3fl_v3fl_v3fl_v3i(float r[3],
                                      const float b[3],
                                      const int c[3]);
 
+MINLINE void negate_v2(float r[2]);
 MINLINE void negate_v2_v2(float r[2], const float a[2]);
 MINLINE void negate_v3(float r[3]);
 MINLINE void negate_v3_v3(float r[3], const float a[3]);
@@ -601,8 +602,6 @@ double dot_vn_vn(const float *array_src_a,
 double len_squared_vn(const float *array, int size) ATTR_WARN_UNUSED_RESULT;
 float normalize_vn_vn(float *array_tar, const float *array_src, int size);
 float normalize_vn(float *array_tar, int size);
-void range_vn_i(int *array_tar, int size, int start);
-void range_vn_u(unsigned int *array_tar, int size, unsigned int start);
 void range_vn_fl(float *array_tar, int size, float start, float step);
 void negate_vn(float *array_tar, int size);
 void negate_vn_vn(float *array_tar, const float *array_src, int size);
