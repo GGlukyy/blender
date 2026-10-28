@@ -396,6 +396,7 @@ static bool sdna_struct_size_check(const SDNA *sdna,
                                    const char **r_error_message)
 {
   int64_t members_size = voided_members_size;
+  int struct_align = 1;
   for (const SDNA_StructMember &member : Span(struct_info->members, struct_info->members_num)) {
     const StringRef member_name = sdna->members[member.member_index];
     const int64_t array_num = sdna->members_array_num[member.member_index];
@@ -405,8 +406,13 @@ static bool sdna_struct_size_check(const SDNA *sdna,
       *r_error_message = "Invalid struct member size in SDNA file";
       return false;
     }
+    /* N1b (wasm32): account for the compiler's member alignment padding (see sdna_member_alignment). */
+    const int member_align = sdna_member_alignment(sdna, &member);
+    members_size = sdna_align_up(int(members_size), member_align);
+    struct_align = std::max(struct_align, member_align);
     members_size += member_size * array_num;
   }
+  members_size = sdna_align_up(int(members_size), struct_align);
   if (members_size != sdna->types_size[struct_info->type_index]) [[unlikely]] {
     *r_error_message = "Invalid struct size in SDNA file";
     return false;
