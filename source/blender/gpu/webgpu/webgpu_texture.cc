@@ -519,7 +519,7 @@ bool WebGPUTexture::init_internal(VertBuf * /*vbo*/)
 bool WebGPUTexture::init_internal(gpu::Texture *src,
                                   int mip_offset,
                                   int layer_offset,
-                                  bool /*use_stencil*/)
+                                  bool use_stencil)
 {
   /* Texture view: share the source's WGPUTexture, expose a WGPUTextureView
    * covering this view's layer/mip window. Film::read_pass reads per-layer
@@ -549,6 +549,12 @@ bool WebGPUTexture::init_internal(gpu::Texture *src,
   vd.arrayLayerCount = (vd.dimension == WGPUTextureViewDimension_2DArray) ?
                            uint32_t(std::max((type_ & GPU_TEXTURE_1D) ? h_ : d_, 1)) :
                        (vd.dimension == WGPUTextureViewDimension_Cube) ? 6u : 1u;
+  if (use_stencil && s->wgpu_format_ == WGPUTextureFormat_Depth32FloatStencil8) {
+    /* Stencil texturing view (workbench shadow samples the stencil as uint): single-aspect view
+     * of the combined depth-stencil texture. */
+    vd.format = WGPUTextureFormat_Stencil8;
+    vd.aspect = WGPUTextureAspect_StencilOnly;
+  }
   view_ = wgpuTextureCreateView(texture_, &vd);
   return view_ != nullptr;
 }
