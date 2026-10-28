@@ -736,9 +736,12 @@ WGPUSampler WebGPUContext::sampler_for_state(GPUSamplerState state)
 }
 
 WGPUTextureView WebGPUContext::dummy_storage_view(WGPUTextureFormat format,
-                                                  WGPUTextureViewDimension dim)
+                                                  WGPUTextureViewDimension dim,
+                                                  uint32_t variant)
 {
-  const uint64_t key = (uint64_t(format) << 8) | uint64_t(dim);
+  /* `variant` (the binding index) keeps two dummies of the same format in ONE bind group from being
+   * the same texture (writable storage aliasing is a validation error). */
+  const uint64_t key = (uint64_t(variant) << 56) | (uint64_t(format) << 8) | uint64_t(dim);
   auto it = dummy_storage_views_.find(key);
   if (it != dummy_storage_views_.end()) {
     return it->second;
@@ -2145,7 +2148,7 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
          * declares (GL reinterprets; WebGPU rejects and the whole draw would be
          * dropped). Substitute a throwaway dummy of the declared format. */
         if (t != nullptr && t->wgpu_format() != b.storage_format) {
-          e.textureView = dummy_storage_view(b.storage_format, b.view_dim);
+          e.textureView = dummy_storage_view(b.storage_format, b.view_dim, b.binding);
         }
         break;
       }
@@ -2324,7 +2327,7 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
                 shader->name_get().c_str(), bindings[i].res_name.c_str(), bindings[j].res_name.c_str());
         fflush(stderr);
       }
-      entries[j].textureView = dummy_storage_view(bindings[j].storage_format, bindings[j].view_dim);
+      entries[j].textureView = dummy_storage_view(bindings[j].storage_format, bindings[j].view_dim, bindings[j].binding);
     }
   }
 

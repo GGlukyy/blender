@@ -426,7 +426,9 @@ class WebGPUContext : public Context {
  public:
   /* 1x1 dummy storage view of an exact format/dimension, for bindings whose
    * bound texture format mismatches the shader's declared image format. */
-  WGPUTextureView dummy_storage_view(WGPUTextureFormat format, WGPUTextureViewDimension dim);
+  WGPUTextureView dummy_storage_view(WGPUTextureFormat format,
+                                     WGPUTextureViewDimension dim,
+                                     uint32_t variant = 0);
   /* Snapshot copy of a texture for sampled bindings that alias a storage-written
    * texture in the same bind group (invalid in WebGPU; GL semantics = read the
    * pre-pass contents). */
