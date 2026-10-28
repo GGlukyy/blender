@@ -709,7 +709,7 @@ static std::string strip_unsigned_suffix_in_pp_conditions(const std::string &gls
     if (first != std::string::npos && line.compare(first, 3, "#if") == 0 && line.compare(first, 6, "#ifdef") != 0 &&
         line.compare(first, 7, "#ifndef") != 0)
     {
-      for (size_t i = first + 3; i + 1 < line.size(); i++) {
+      for (size_t i = first + 3; i < line.size(); i++) {
         if (line[i] == 'u' && std::isdigit(uchar(line[i - 1])) &&
             (i + 1 == line.size() || !(std::isalnum(uchar(line[i + 1])) || line[i + 1] == '_')))
         {
