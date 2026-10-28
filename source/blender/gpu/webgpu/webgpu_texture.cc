@@ -420,6 +420,9 @@ void WebGPUTexture::mip_range_set(int min, int max)
 
 WGPUTextureView WebGPUTexture::wgpu_sample_view()
 {
+  if (stencil_only_view_ && view_) {
+    return view_;
+  }
   if (!webgpu_format_has_stencil(wgpu_format_)) {
     /* Honor the sampling mip window: Blender clamps to the mips it actually
        uploaded/generated; the default view spans the full chain and samples
@@ -554,6 +557,7 @@ bool WebGPUTexture::init_internal(gpu::Texture *src,
      * of the combined depth-stencil texture. */
     vd.format = WGPUTextureFormat_Stencil8;
     vd.aspect = WGPUTextureAspect_StencilOnly;
+    stencil_only_view_ = true;
   }
   view_ = wgpuTextureCreateView(texture_, &vd);
   return view_ != nullptr;

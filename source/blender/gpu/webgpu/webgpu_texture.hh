@@ -42,6 +42,7 @@ class WebGPUTexture : public Texture {
    * it then only references, never destroys). Reads/attachments offset into the
    * shared texture by view_layer_/view_mip_. */
   bool is_view_ = false;
+  bool stencil_only_view_ = false; /* view_ is a StencilOnly view (uint sampling). */
   int view_layer_ = 0;
   int view_mip_ = 0;
   long long alloc_bytes_ = 0;
