@@ -2313,8 +2313,9 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
         const int si = ii ? ii->binding : -1, sj = ij ? ij->binding : -1;
         WebGPUTexture *ti = (si >= 0 && si < WEBGPU_MAX_IMAGE) ? bound_image_[si] : nullptr;
         WebGPUTexture *tj = (sj >= 0 && sj < WEBGPU_MAX_IMAGE) ? bound_image_[sj] : nullptr;
-        same = ti && tj && ti->wgpu_texture() == tj->wgpu_texture() && ti->view_mip() == tj->view_mip() &&
-               (ti->view_layer() == tj->view_layer() || !ti->is_view() || !tj->is_view());
+        /* NOTE: deliberately ignores mip/layer (a stricter test left aliasing errors that poisoned the
+         * frame on 5.3; the lookdev per-mip copy loses its extra mips as a result — TODO). */
+        same = ti && tj && ti->wgpu_texture() == tj->wgpu_texture();
       }
       if (!same) {
         continue;
