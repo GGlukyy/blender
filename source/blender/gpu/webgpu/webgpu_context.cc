@@ -2317,7 +2317,11 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
       const ShaderInput *in_j = iface->uniform_get(StringRefNull(bindings[j].res_name.c_str()));
       const int slot_j = in_j ? in_j->binding : -1;
       WebGPUTexture *tex_j = (slot_j >= 0 && slot_j < WEBGPU_MAX_IMAGE) ? bound_image_[slot_j] : nullptr;
-      if (tex_j == nullptr || tex_j->wgpu_texture() != tex_i->wgpu_texture()) {
+      /* Same texture but a different view = a different mip/layer (e.g. lookdev copy writes mips 0..4
+       * of one atlas): not aliasing. Only identical views conflict. */
+      if (tex_j == nullptr || tex_j->wgpu_texture() != tex_i->wgpu_texture() ||
+          entries[i].textureView != entries[j].textureView)
+      {
         continue;
       }
       static int s_alias_logged = 0;
