@@ -2302,7 +2302,21 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
       continue;
     }
     for (size_t j = i + 1; j < bindings.size(); j++) {
-      if (bindings[j].kind != WgslResourceBinding::STORAGE_TEXTURE || entries[j].textureView != entries[i].textureView) {
+      if (bindings[j].kind != WgslResourceBinding::STORAGE_TEXTURE || entries[j].textureView == nullptr) {
+        continue;
+      }
+      /* Different view handles can still cover the same subresource (a view of mip 0 vs the base). */
+      bool same = entries[j].textureView == entries[i].textureView;
+      if (!same) {
+        const ShaderInput *ii = iface->uniform_get(StringRefNull(bindings[i].res_name.c_str()));
+        const ShaderInput *ij = iface->uniform_get(StringRefNull(bindings[j].res_name.c_str()));
+        const int si = ii ? ii->binding : -1, sj = ij ? ij->binding : -1;
+        WebGPUTexture *ti = (si >= 0 && si < WEBGPU_MAX_IMAGE) ? bound_image_[si] : nullptr;
+        WebGPUTexture *tj = (sj >= 0 && sj < WEBGPU_MAX_IMAGE) ? bound_image_[sj] : nullptr;
+        same = ti && tj && ti->wgpu_texture() == tj->wgpu_texture() && ti->view_mip() == tj->view_mip() &&
+               (ti->view_layer() == tj->view_layer() || !ti->is_view() || !tj->is_view());
+      }
+      if (!same) {
         continue;
       }
       static int s_alias_logged = 0;
