@@ -668,7 +668,23 @@ static void wgsl_inline_computed_overrides(std::string &wgsl)
     pos = eol + 1;
   }
   auto is_word = [](char c) { return isalnum(uint8_t(c)) || c == '_'; };
-  for (const Ov &ov : found) {
+  auto replace_word = [&](std::string &text, const std::string &name, const std::string &repl) {
+    size_t i = 0;
+    while ((i = text.find(name, i)) != std::string::npos) {
+      const size_t e = i + name.size();
+      const bool left_ok = i == 0 || (!is_word(text[i - 1]) && text[i - 1] != '.');
+      const bool right_ok = e >= text.size() || !is_word(text[e]);
+      if (left_ok && right_ok) {
+        text.replace(i, name.size(), repl);
+        i += repl.size();
+      }
+      else {
+        i = e;
+      }
+    }
+  };
+  for (size_t oi = 0; oi < found.size(); oi++) {
+    const Ov ov = found[oi];
     /* Re-locate the declaration line (earlier edits shift offsets). */
     const std::string decl_start = "override " + ov.name + " ";
     size_t at = wgsl.find(decl_start);
@@ -679,18 +695,11 @@ static void wgsl_inline_computed_overrides(std::string &wgsl)
     line_end = (line_end == std::string::npos) ? wgsl.size() : line_end + 1;
     wgsl.erase(at, line_end - at);
     const std::string repl = "(" + ov.expr + ")";
-    size_t i = 0;
-    while ((i = wgsl.find(ov.name, i)) != std::string::npos) {
-      const size_t e = i + ov.name.size();
-      const bool left_ok = i == 0 || (!is_word(wgsl[i - 1]) && wgsl[i - 1] != '.');
-      const bool right_ok = e >= wgsl.size() || !is_word(wgsl[e]);
-      if (left_ok && right_ok) {
-        wgsl.replace(i, ov.name.size(), repl);
-        i += repl.size();
-      }
-      else {
-        i = e;
-      }
+    replace_word(wgsl, ov.name, repl);
+    /* A later computed override may reference this one (chain v_2 = v_1 & x): its stored expression
+     * must be updated too, otherwise the inlined text keeps pointing at the removed declaration. */
+    for (size_t oj = oi + 1; oj < found.size(); oj++) {
+      replace_word(found[oj].expr, ov.name, repl);
     }
   }
 }
