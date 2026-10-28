@@ -742,7 +742,28 @@ static bool glsl_to_wgsl(const std::string &glsl_in,
                          const char *name,
                          std::string &r_wgsl)
 {
-  const std::string glsl = strip_unsigned_suffix_in_pp_conditions(glsl_in);
+  std::string glsl = strip_unsigned_suffix_in_pp_conditions(glsl_in);
+  {
+    /* The 5.3 shader_tool already expands NAN_FLT to a literal bit-cast, which Tint refuses to constant-fold
+     * ("value nan cannot be represented as 'f32'"). Route it through the mutable g_webgpu_nan_bits global
+     * (declared in gpu_shader_compat_glsl.glsl) so the NaN is produced at runtime. */
+    static const std::string lit = "uintBitsToFloat(0x7FC00000u)";
+    static const std::string rep = "uintBitsToFloat(g_webgpu_nan_bits)";
+    if (glsl.find("g_webgpu_nan_bits") != std::string::npos) {
+      size_t pos = 0;
+      while ((pos = glsl.find(lit, pos)) != std::string::npos) {
+        /* Skip the global's own initializer / macro definitions (they use the literal on purpose). */
+        const size_t bol = glsl.rfind('\n', pos);
+        const std::string head = glsl.substr(bol == std::string::npos ? 0 : bol + 1, pos - (bol == std::string::npos ? 0 : bol + 1));
+        if (head.find("#") != std::string::npos) {
+          pos += lit.size();
+          continue;
+        }
+        glsl.replace(pos, lit.size(), rep);
+        pos += rep.size();
+      }
+    }
+  }
   if (const char *gpat = getenv("WGPU_DUMP_GLSL_STDERR")) {
     if (strstr(name, gpat) != nullptr) {
       fprintf(stderr, "GLSL_DUMP %s kind=%d\n%s\nGLSL_DUMP_END\n", name, int(kind), glsl.c_str());
