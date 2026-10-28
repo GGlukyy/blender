@@ -678,6 +678,21 @@ void WebGPUBatch::record_draw(int vertex_first,
       ok = ok && vs->cpu_data() != nullptr && !vs->format.deinterleaved && vs->format.stride > 0;
       any_src = vs;
     }
+    if (!(ok && any_src != nullptr && count > 0)) {
+      static int s_pe_log = 0;
+      if (s_pe_log++ < 12) {
+        fprintf(stderr, "WGPU_PTS indexed NOT expanded '%s': ok=%d any_src=%d count=%u idata=%d subrange=%d raw=%u first=%u\n",
+                shader->name_get().c_str(), int(ok), int(any_src != nullptr), count, int(idata != nullptr),
+                int(pibo->is_subrange()), pibo->index_len_raw(), first);
+        for (const WebGPUVertexBuffer *vs : vb_src) {
+          if (vs) {
+            fprintf(stderr, "WGPU_PTS   vbo cpu=%d deinterleaved=%d stride=%u\n", int(vs->cpu_data() != nullptr),
+                    int(vs->format.deinterleaved), uint(vs->format.stride));
+          }
+        }
+        fflush(stderr);
+      }
+    }
     if (ok && any_src != nullptr && count > 0) {
       if (point_expand_ == nullptr) {
         point_expand_ = new PointExpand();
