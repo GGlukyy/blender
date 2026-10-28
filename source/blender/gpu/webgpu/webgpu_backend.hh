@@ -691,6 +691,9 @@ class WebGPUBackend : public GPUBackend {
 
   /* TODO: still stubs — implement as the render path starts exercising them. */
   Fence *fence_alloc() override { return nullptr; }
+  /* N1b (5.3): ray-tracing acceleration structures are unsupported on WebGPU (same as GL). */
+  TopLevelAS *tlas_alloc(const char * /*name*/) override { return nullptr; }
+  BottomLevelAS *blas_alloc(const char * /*name*/) override { return nullptr; }
   /* N1b (5.3): new pure virtual. No in-flight limiter on this backend yet (see BACKLOG H2). */
   WorkInFlight *work_in_flight_alloc(unsigned int /*max_in_flight*/) override
   {
