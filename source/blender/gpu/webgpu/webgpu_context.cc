@@ -2317,7 +2317,11 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
       const ShaderInput *in_j = iface->uniform_get(StringRefNull(bindings[j].res_name.c_str()));
       const int slot_j = in_j ? in_j->binding : -1;
       WebGPUTexture *tex_j = (slot_j >= 0 && slot_j < WEBGPU_MAX_IMAGE) ? bound_image_[slot_j] : nullptr;
-      if (tex_j == nullptr || tex_j->wgpu_texture() != tex_i->wgpu_texture()) {
+      /* Different mip levels (or layers) of one texture are distinct subresources: not aliasing. */
+      if (tex_j == nullptr || tex_j->wgpu_texture() != tex_i->wgpu_texture() ||
+          tex_j->view_mip() != tex_i->view_mip() ||
+          (tex_i->is_view() && tex_j->is_view() && tex_i->view_layer() != tex_j->view_layer()))
+      {
         continue;
       }
       static int s_alias_logged = 0;
