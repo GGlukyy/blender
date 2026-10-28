@@ -2338,7 +2338,7 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
     for (const WgslResourceBinding &b : bindings) {
       n_st += (b.kind == WgslResourceBinding::STORAGE_TEXTURE);
     }
-    if (n_st >= 2 && s_diag < 60) {
+    if (n_st >= 2 && s_diag < 400) {
       s_diag++;
       for (size_t i = 0; i < bindings.size(); i++) {
         if (bindings[i].kind != WgslResourceBinding::STORAGE_TEXTURE) {

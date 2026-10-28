@@ -521,6 +521,14 @@ bool WebGPUTexture::init_internal(gpu::Texture *src, bool /*use_stencil*/)
   /* N1b (5.3): the view range is stored by Texture::init_view instead of being passed in. */
   const int mip_offset = mip_min_;
   const int layer_offset = view_layer_start_;
+  {
+    static int s_vlog = 0;
+    if (s_vlog < 40 && src) {
+      s_vlog++;
+      fprintf(stderr, "WGPU_VIEW %s mip_min=%d mipmaps=%d layer=%d src_mipmaps=%d\n", name_.c_str(), mip_min_, mipmaps_,
+              layer_offset, src->mip_count());
+    }
+  }
   /* Texture view: share the source's WGPUTexture, expose a WGPUTextureView
    * covering this view's layer/mip window. Film::read_pass reads per-layer
    * views of the accumulation textures, so reads must also work (read() offsets
