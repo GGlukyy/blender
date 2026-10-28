@@ -2290,6 +2290,44 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
     }
   }
 
+  /* Storage-texture vs storage-texture aliasing: the same texture bound to two image slots of one
+   * pass where one of them is writable is a validation error in WebGPU (and poisons the whole
+   * command buffer). EEVEE 5.3 binds one dummy texture to several unused image slots. Give the
+   * later binding a throwaway dummy of its declared format. */
+  for (size_t i = 0; i < bindings.size(); i++) {
+    if (bindings[i].kind != WgslResourceBinding::STORAGE_TEXTURE || entries[i].textureView == nullptr) {
+      continue;
+    }
+    const ShaderInput *in_i = iface->uniform_get(StringRefNull(bindings[i].res_name.c_str()));
+    const int slot_i = in_i ? in_i->binding : -1;
+    WebGPUTexture *tex_i = (slot_i >= 0 && slot_i < WEBGPU_MAX_IMAGE) ? bound_image_[slot_i] : nullptr;
+    if (tex_i == nullptr) {
+      continue;
+    }
+    for (size_t j = i + 1; j < bindings.size(); j++) {
+      if (bindings[j].kind != WgslResourceBinding::STORAGE_TEXTURE || entries[j].textureView == nullptr ||
+          (!bindings[i].writable && bindings[i].storage_access == WGPUStorageTextureAccess_ReadOnly &&
+           bindings[j].storage_access == WGPUStorageTextureAccess_ReadOnly))
+      {
+        continue;
+      }
+      const ShaderInput *in_j = iface->uniform_get(StringRefNull(bindings[j].res_name.c_str()));
+      const int slot_j = in_j ? in_j->binding : -1;
+      WebGPUTexture *tex_j = (slot_j >= 0 && slot_j < WEBGPU_MAX_IMAGE) ? bound_image_[slot_j] : nullptr;
+      if (tex_j == nullptr || tex_j->wgpu_texture() != tex_i->wgpu_texture()) {
+        continue;
+      }
+      static int s_alias_logged = 0;
+      if (s_alias_logged < 8) {
+        s_alias_logged++;
+        fprintf(stderr, "WGPU_BG storage alias '%s': '%s' and '%s' share a texture, 2nd -> dummy\n",
+                shader->name_get().c_str(), bindings[i].res_name.c_str(), bindings[j].res_name.c_str());
+        fflush(stderr);
+      }
+      entries[j].textureView = dummy_storage_view(bindings[j].storage_format, bindings[j].view_dim);
+    }
+  }
+
   /* Writable buffer aliasing (same WGPUBuffer at two bindings, either writable)
    * is a WebGPU validation error at dispatch — and one invalid command POISONS
    * the whole command buffer at submit, silently dropping every valid draw
