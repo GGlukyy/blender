@@ -692,11 +692,54 @@ static void wgsl_inline_computed_overrides(std::string &wgsl)
   }
 }
 
-static bool glsl_to_wgsl(const std::string &glsl,
+/* glslang's preprocessor rejects unsigned literals (`0u`) in `#if`/`#elif` expressions ("bad
+ * expression"). The 5.3 shader_tool emits them for unrolled static branches, so strip the suffix. */
+static std::string strip_unsigned_suffix_in_pp_conditions(const std::string &glsl)
+{
+  std::string out;
+  out.reserve(glsl.size());
+  size_t pos = 0;
+  while (pos < glsl.size()) {
+    size_t eol = glsl.find('\n', pos);
+    if (eol == std::string::npos) {
+      eol = glsl.size();
+    }
+    std::string line = glsl.substr(pos, eol - pos);
+    size_t first = line.find_first_not_of(" \t");
+    if (first != std::string::npos && line.compare(first, 3, "#if") == 0 && line.compare(first, 6, "#ifdef") != 0 &&
+        line.compare(first, 7, "#ifndef") != 0)
+    {
+      for (size_t i = first + 3; i + 1 < line.size(); i++) {
+        if (line[i] == 'u' && std::isdigit(uchar(line[i - 1])) &&
+            (i + 1 == line.size() || !(std::isalnum(uchar(line[i + 1])) || line[i + 1] == '_')))
+        {
+          /* Digit run must not be part of an identifier. */
+          size_t b = i - 1;
+          while (b > 0 && std::isdigit(uchar(line[b - 1]))) {
+            b--;
+          }
+          if (b == 0 || !(std::isalnum(uchar(line[b - 1])) || line[b - 1] == '_')) {
+            line.erase(i, 1);
+            i--;
+          }
+        }
+      }
+    }
+    out += line;
+    if (eol < glsl.size()) {
+      out += '\n';
+    }
+    pos = eol + 1;
+  }
+  return out;
+}
+
+static bool glsl_to_wgsl(const std::string &glsl_in,
                          shaderc_shader_kind kind,
                          const char *name,
                          std::string &r_wgsl)
 {
+  const std::string glsl = strip_unsigned_suffix_in_pp_conditions(glsl_in);
   if (const char *gpat = getenv("WGPU_DUMP_GLSL_STDERR")) {
     if (strstr(name, gpat) != nullptr) {
       fprintf(stderr, "GLSL_DUMP %s kind=%d\n%s\nGLSL_DUMP_END\n", name, int(kind), glsl.c_str());

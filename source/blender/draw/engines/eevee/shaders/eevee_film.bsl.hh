@@ -497,7 +497,7 @@ struct Film {
       return float4(imageLoadFast(value_accum_img, int3(texel_film, display_id)).rrr, 1.0f);
     }
     if (uniforms.uniform_buf.film.display_storage_type == PASS_STORAGE_COLOR) {
-      return imageLoadFast(color_accum_img, int3(texel_film, display_id));
+      return texelFetch(color_accum_tx, int3(texel_film, display_id), 0);
     }
     return eevee::cryptomatte::false_color(
         imageLoadFast(cryptomatte.cryptomatte_img, int3(texel_film, display_id)).r);

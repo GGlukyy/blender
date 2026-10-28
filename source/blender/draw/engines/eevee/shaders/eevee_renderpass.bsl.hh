@@ -20,6 +20,12 @@ struct RenderPassOutput {
     }
   }
 
+  /* Web: the image is write-only, so passes that read it back (deferred combine of render passes) get zero. */
+  float4 load_color(int2 /*texel*/, int /*id*/)
+  {
+    return float4(0.0f);
+  }
+
   void store_value(int2 texel, int id, float value)
   {
     if (id >= 0) {
