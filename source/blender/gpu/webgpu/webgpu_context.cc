@@ -2331,6 +2331,32 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
     }
   }
 
+  {
+    /* N1b diagnostic: list every storage-texture binding of groups with >= 2 of them. */
+    static int s_diag = 0;
+    int n_st = 0;
+    for (const WgslResourceBinding &b : bindings) {
+      n_st += (b.kind == WgslResourceBinding::STORAGE_TEXTURE);
+    }
+    if (n_st >= 2 && s_diag < 60) {
+      s_diag++;
+      for (size_t i = 0; i < bindings.size(); i++) {
+        if (bindings[i].kind != WgslResourceBinding::STORAGE_TEXTURE) {
+          continue;
+        }
+        const ShaderInput *in = iface->uniform_get(StringRefNull(bindings[i].res_name.c_str()));
+        const int sl = in ? in->binding : -1;
+        WebGPUTexture *t = (sl >= 0 && sl < WEBGPU_MAX_IMAGE) ? bound_image_[sl] : nullptr;
+        fprintf(stderr, "WGPU_STDIAG '%s' @%u '%s' view=%p tex=%p wtex=%p mip=%d layer=%d isview=%d acc=%d\n",
+                shader->name_get().c_str(), bindings[i].binding, bindings[i].res_name.c_str(),
+                (void *)entries[i].textureView, (void *)t, t ? (void *)t->wgpu_texture() : nullptr,
+                t ? t->view_mip() : -1, t ? t->view_layer() : -1, t ? int(t->is_view()) : -1,
+                int(bindings[i].storage_access));
+      }
+      fflush(stderr);
+    }
+  }
+
   /* Writable buffer aliasing (same WGPUBuffer at two bindings, either writable)
    * is a WebGPU validation error at dispatch — and one invalid command POISONS
    * the whole command buffer at submit, silently dropping every valid draw
