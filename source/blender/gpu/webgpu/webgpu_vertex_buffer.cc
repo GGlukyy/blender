@@ -122,6 +122,11 @@ void WebGPUVertexBuffer::upload_data()
 void WebGPUVertexBuffer::update_sub(uint start, uint len, const void *data)
 {
   gen_ = webgpu_buffer_gen_next();
+  if (!data_ && usage_ == GPU_USAGE_DEVICE_ONLY && start == 0 && len >= this->size_used_get() && len > 0) {
+    /* 5.3 fills DEVICE_ONLY vertex buffers with one full update_sub. Keep a CPU shadow of those: the
+     * point-sprite expansion (edit-mode vertex dots) de-indexes on the CPU and needs it. */
+    data_ = MEM_new_array_uninitialized<uchar>(this->size_alloc_get(), __func__);
+  }
   if (data_) {
     memcpy(data_ + start, data, len);
   }
