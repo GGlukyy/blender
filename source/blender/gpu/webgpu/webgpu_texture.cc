@@ -519,13 +519,13 @@ bool WebGPUTexture::init_internal(VertBuf * /*vbo*/)
 bool WebGPUTexture::init_internal(gpu::Texture *src, bool /*use_stencil*/)
 {
   /* N1b (5.3): the view range is stored by Texture::init_view instead of being passed in. */
-  const int mip_offset = mip_min_;
+  const int mip_offset = Texture::mip_min_;
   const int layer_offset = view_layer_start_;
   {
     static int s_vlog = 0;
     if (s_vlog < 40 && src) {
       s_vlog++;
-      fprintf(stderr, "WGPU_VIEW %s mip_min=%d mipmaps=%d layer=%d src_mipmaps=%d\n", name_.c_str(), mip_min_, mipmaps_,
+      fprintf(stderr, "WGPU_VIEW %s mip_min=%d mipmaps=%d layer=%d src_mipmaps=%d\n", name_.c_str(), Texture::mip_min_, mipmaps_,
               layer_offset, src->mip_count());
     }
   }
