@@ -87,6 +87,10 @@ class WebGPUTexture : public Texture {
   {
     return view_mip_;
   }
+  int view_mip() const
+  {
+    return view_mip_;
+  }
   int view_layer() const
   {
     return view_layer_;

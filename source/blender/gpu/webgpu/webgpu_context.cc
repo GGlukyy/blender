@@ -2325,10 +2325,11 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
         continue;
       }
       static int s_alias_logged = 0;
-      if (s_alias_logged < 8) {
+      if (s_alias_logged < 30) {
         s_alias_logged++;
-        fprintf(stderr, "WGPU_BG storage alias '%s': '%s' and '%s' share a texture, 2nd -> dummy\n",
-                shader->name_get().c_str(), bindings[i].res_name.c_str(), bindings[j].res_name.c_str());
+        fprintf(stderr, "WGPU_BG storage alias '%s': '%s' and '%s' share a texture, 2nd -> dummy (view_mip=%d/%d is_view=%d/%d)\n",
+                shader->name_get().c_str(), bindings[i].res_name.c_str(), bindings[j].res_name.c_str(),
+                tex_i->view_mip(), tex_j->view_mip(), int(tex_i->is_view()), int(tex_j->is_view()));
         fflush(stderr);
       }
       entries[j].textureView = dummy_storage_view(bindings[j].storage_format, bindings[j].view_dim, bindings[j].binding);
