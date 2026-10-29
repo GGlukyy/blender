@@ -106,6 +106,14 @@ static std::mutex g_buf_free_mutex;
 std::atomic<uint64_t> g_free_seq{0};
 static std::vector<std::pair<WGPUBuffer, uint64_t>> g_buf_free_list;
 static std::vector<std::pair<WGPUTexture, uint64_t>> g_tex_free_list;
+#ifdef __EMSCRIPTEN__
+/* T2 telemetry: number of destroyed-but-not-yet-released buffers + textures (read from JS). */
+extern "C" EMSCRIPTEN_KEEPALIVE int wgpu_pending_free_n()
+{
+  std::lock_guard<std::mutex> lock(g_buf_free_mutex);
+  return int(g_buf_free_list.size() + g_tex_free_list.size());
+}
+#endif
 void wgpu_texture_free(WGPUTexture t)
 {
   if (t == nullptr) {

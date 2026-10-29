@@ -463,13 +463,23 @@ int main(int argc,
            * which Safari does much later than Chrome). */
           const gmem = new BroadcastChannel("blender-gpumem");
           const gst = {buf: 0, buf_mb: 0, tex: 0, tex_mb: 0, buf_new: 0, buf_destroyed: 0, buf_gc: 0,
-                       tex_new: 0, tex_destroyed: 0, tex_gc: 0, bg_new: 0, view_new: 0, lag_ms: 0, lag_max: 0};
+                       tex_new: 0, tex_destroyed: 0, tex_gc: 0, bg_new: 0, view_new: 0, lag_ms: 0, lag_max: 0,
+                       /* T2 (A/B backpressure vs JS leak): */
+                       submits: 0, completed: 0, q_depth: 0, q_depth_max: 0, write_mb: 0, write_mb_s: 0,
+                       map_n: 0, map_mb: 0, pipelines_created: 0, wgpu_live: 0, pending_free: 0};
+          let gwbytes = 0, gmbytes = 0, gwlast = 0, gwprev = 0;
           let glast = 0, gbytes = {buf: 0, tex: 0};
           const gpost = (force, extra) => {
             const n = performance.now();
             if (!force && n - glast < 1000) return;
             glast = n;
             gst.buf_mb = Math.round(gbytes.buf / 1048576); gst.tex_mb = Math.round(gbytes.tex / 1048576);
+            gst.q_depth = gst.submits - gst.completed; if (gst.q_depth > gst.q_depth_max) gst.q_depth_max = gst.q_depth;
+            gst.write_mb = Math.round(gwbytes / 1048576); gst.map_mb = Math.round(gmbytes / 1048576);
+            if (gwlast) gst.write_mb_s = +((gwbytes - gwprev) / 1048576 / ((n - gwlast) / 1000)).toFixed(2);
+            gwlast = n; gwprev = gwbytes;
+            try { gst.pending_free = _wgpu_pending_free_n(); } catch (e) {}
+            try { if (typeof WebGPU !== "undefined") gst.wgpu_live = Object.keys(WebGPU.Internals.jsObjects).length; } catch (e) {}
             gmem.postMessage(Object.assign({}, gst, extra || {}));
           };
           const grecs = new WeakMap();
@@ -513,6 +523,26 @@ int main(int argc,
           if (typeof GPUTexture !== "undefined") {
             const gcv = GPUTexture.prototype.createView;
             GPUTexture.prototype.createView = function () { gst.view_new++; return gcv.apply(this, arguments); };
+          }
+          /* T2: queue depth (submits - completed), CPU->GPU copy volume, mapAsync volume, pipelines. */
+          {
+            const qp = GPUQueue.prototype, qsub = qp.submit, qwb = qp.writeBuffer, qwt = qp.writeTexture;
+            qp.submit = function () {
+              gst.submits++;
+              const r = qsub.apply(this, arguments);
+              this.onSubmittedWorkDone().then(() => { gst.completed++; });
+              return r;
+            };
+            qp.writeBuffer = function (b, o, d, dofs, sz) {
+              gwbytes += d.byteLength === undefined ? 0 : (sz !== undefined ? sz * (d.BYTES_PER_ELEMENT || 1) : d.byteLength);
+              return qwb.apply(this, arguments);
+            };
+            qp.writeTexture = function (dst, d) { gwbytes += d.byteLength || 0; return qwt.apply(this, arguments); };
+            const bmap = GPUBuffer.prototype.mapAsync;
+            GPUBuffer.prototype.mapAsync = function (m, o, sz) { gst.map_n++; gmbytes += sz !== undefined ? sz : this.size; return bmap.apply(this, arguments); };
+            for (const fn of ["createRenderPipeline", "createComputePipeline", "createRenderPipelineAsync", "createComputePipelineAsync"]) {
+              const o = gdev[fn].bind(gdev); gdev[fn] = (d) => { gst.pipelines_created++; return o(d); };
+            }
           }
           setInterval(() => {
             const t = performance.now();
