@@ -467,6 +467,7 @@ int main(int argc,
                        /* T2 (A/B backpressure vs JS leak): */
                        submits: 0, completed: 0, q_depth: 0, q_depth_max: 0, write_mb: 0, write_mb_s: 0,
                        map_n: 0, map_mb: 0, pipelines_created: 0, wgpu_live: 0, pending_free: 0};
+          globalThis.__gst = gst;
           let gwbytes = 0, gmbytes = 0, gwlast = 0, gwprev = 0;
           let glast = 0, gbytes = {buf: 0, tex: 0};
           const gpost = (force, extra) => {

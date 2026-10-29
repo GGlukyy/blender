@@ -730,6 +730,35 @@ static void wm_step_apply_film_result(bContext *C)
  * request on the proxied-main pthread and opens the file browser at the mount. */
 void wm_web_poll_pending_file_open(bContext *C);
 
+#  include <emscripten/em_js.h>
+/* T3 backpressure (IPAD_CRASH H2): GPU queue depth = submits - completed, counted by the JS
+ * wrappers in creator.cc (globalThis.__gst, same pthread). */
+EM_JS(int, wm_web_gpu_queue_depth, (), {
+  return globalThis.__gst ? globalThis.__gst.submits - globalThis.__gst.completed : 0;
+});
+
+/* True when the previous frames are still queued on the GPU: skip drawing this tick (events are
+ * still handled) and let the next rAF retry. WGPU_BP=1 enables (iPad default, ?bp=0 off). Never
+ * skips more than 120 ticks in a row so a lost completion callback cannot freeze the UI. */
+static bool wm_web_skip_draw()
+{
+  static const bool enabled = getenv("WGPU_BP") && getenv("WGPU_BP")[0] == '1';
+  static int skipped = 0;
+  if (!enabled) {
+    return false;
+  }
+  if (wm_web_gpu_queue_depth() >= 2 && skipped < 120) {
+    skipped++;
+    static int total = 0;
+    if (++total % 50 == 1) {
+      fprintf(stderr, "WGPU_BP skipped draw total=%d depth=%d\n", total, wm_web_gpu_queue_depth());
+    }
+    return true;
+  }
+  skipped = 0;
+  return false;
+}
+
 static void wm_main_step(void *arg)
 {
   bContext *C = static_cast<bContext *>(arg);
@@ -743,7 +772,9 @@ static void wm_main_step(void *arg)
   /* Events have left notes about changes, we handle and cache it. */
   wm_event_do_notifiers(C);
   /* Execute cached changes draw. */
-  wm_draw_update(C);
+  if (!wm_web_skip_draw()) {
+    wm_draw_update(C);
+  }
   PRF_frame_mark;
 }
 #endif
