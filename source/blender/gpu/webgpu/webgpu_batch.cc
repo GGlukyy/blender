@@ -355,6 +355,21 @@ static void hash_append(uint64_t &h, const void *data, size_t len)
     h = (h ^ p[i]) * 1099511628211ull;
   }
 }
+/* Hash field by field: WGPUStencilParams / WGPUVertexAttribute have padding bytes with indeterminate values, hashing the raw
+ * struct made the pipeline key random -> a new pipeline (+ wrappers, never freed) for almost every draw (D6). */
+static void hash_stencil(uint64_t &h, const WGPUStencilParams &s)
+{
+  const uint32_t v[] = {uint32_t(s.enabled),
+                        uint32_t(s.front.compare), uint32_t(s.front.failOp), uint32_t(s.front.depthFailOp), uint32_t(s.front.passOp),
+                        uint32_t(s.back.compare), uint32_t(s.back.failOp), uint32_t(s.back.depthFailOp), uint32_t(s.back.passOp),
+                        s.read_mask, s.write_mask};
+  hash_append(h, v, sizeof(v));
+}
+static void hash_vattr(uint64_t &h, const WGPUVertexAttribute &a)
+{
+  const uint64_t v[] = {uint64_t(a.format), uint64_t(a.offset), uint64_t(a.shaderLocation)};
+  hash_append(h, v, sizeof(v));
+}
 
 /* -------------------------------------------------------------------- */
 /** \name Indexed point-sprite expansion
@@ -846,11 +861,11 @@ void WebGPUBatch::record_draw(int vertex_first,
   hash_append(key, &write_mask_bits, sizeof(write_mask_bits));
   hash_append(key, &blend, sizeof(blend));
   hash_append(key, &cull, sizeof(cull));
-  hash_append(key, &stencil, sizeof(stencil));
+  hash_stencil(key, stencil);
   for (const WGPUVertexBufferLayout &l : vb_layouts) {
     hash_append(key, &l.arrayStride, sizeof(l.arrayStride));
     for (size_t a = 0; a < l.attributeCount; a++) {
-      hash_append(key, &l.attributes[a], sizeof(WGPUVertexAttribute));
+      hash_vattr(key, l.attributes[a]);
     }
   }
   hash_append(key, &expand_points, sizeof(expand_points));
@@ -969,7 +984,8 @@ void WebGPUBatch::record_draw(int vertex_first,
     {
       static const bool log_compile = getenv("WGPU_LOG_COMPILE") != nullptr;
       if (log_compile) {
-        fprintf(stderr, "COMPILELOG pipeline '%s' %.1f ms\n", shader->name_get().c_str(), emscripten_get_now() - t_pipe0);
+        fprintf(stderr, "COMPILELOG pipeline '%s' %.1f ms spec=%llx topo=%d expand=%d/%d vp=%dx%d cc=%d fmt0=%d depth=%d/%d/%d blend=%d\n", shader->name_get().c_str(), emscripten_get_now() - t_pipe0,
+                (unsigned long long)spec_h, int(topo), int(expand_points), int(expand_indexed), vp_rect[2], vp_rect[3], int(color_count), int(color_count ? color_fmt[0] : 0), int(depth_fmt), int(depth_test), int(depth_write), int(blend));
       }
     }
     if (pipe_layout) {
@@ -1556,7 +1572,7 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
   hash_append(key, &write_mask_bits, sizeof(write_mask_bits));
   hash_append(key, &blend, sizeof(blend));
   hash_append(key, &cull, sizeof(cull));
-  hash_append(key, &stencil, sizeof(stencil));
+  hash_stencil(key, stencil);
   for (uint32_t li = 0; li < layout_count; li++) {
     hash_append(key, &layouts[li].arrayStride, sizeof(layouts[li].arrayStride));
     for (size_t a = 0; a < layouts[li].attributeCount; a++) {
