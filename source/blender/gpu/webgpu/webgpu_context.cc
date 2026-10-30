@@ -106,6 +106,10 @@ static std::mutex g_buf_free_mutex;
 /* Each entry carries the free-sequence number at free time: it may only be destroyed once no
  * recording context started its encoder BEFORE the free (see WebGPUContext::recording_seq). */
 std::atomic<uint64_t> g_free_seq{0};
+/* Telemetry (wgpu_pending_free_n) must NOT take g_buf_free_mutex: the pool eviction below calls wgpuBufferDestroy()
+ * while holding it, and the JS telemetry wrapper around destroy() calls wgpu_pending_free_n() synchronously
+ * -> same thread locks twice -> "pthread mutex deadlock detected" (D3, reproduced 30. 10. by scripts/auto_win.sh light). */
+static std::atomic<int> g_pending_free_cnt{0};
 static std::vector<std::pair<WGPUBuffer, uint64_t>> g_buf_free_list;
 static std::vector<std::pair<WGPUTexture, uint64_t>> g_tex_free_list;
 #ifdef __EMSCRIPTEN__
@@ -116,8 +120,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE uint32_t *wgpu_hb_ptr()
 }
 extern "C" EMSCRIPTEN_KEEPALIVE int wgpu_pending_free_n()
 {
-  std::lock_guard<std::mutex> lock(g_buf_free_mutex);
-  return int(g_buf_free_list.size() + g_tex_free_list.size());
+  return g_pending_free_cnt.load(std::memory_order_relaxed);
 }
 #endif
 void wgpu_texture_free(WGPUTexture t)
@@ -127,6 +130,7 @@ void wgpu_texture_free(WGPUTexture t)
   }
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
   g_tex_free_list.push_back({t, ++g_free_seq});
+  g_pending_free_cnt.fetch_add(1, std::memory_order_relaxed);
 }
 void wgpu_buffer_free(WGPUBuffer b)
 {
@@ -135,6 +139,7 @@ void wgpu_buffer_free(WGPUBuffer b)
   }
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
   g_buf_free_list.push_back({b, ++g_free_seq}); /* Keeps the caller's reference until the flush. */
+  g_pending_free_cnt.fetch_add(1, std::memory_order_relaxed);
 }
 /* K3/H1-C: pool of whole-buffer-overwritten per-frame buffers keyed by (size, usage). Fast drags
  * created ~1200 buffers/s; WebKit keeps the memory of destroyed buffers while a bind group
@@ -210,6 +215,7 @@ void wgpu_flush_buffer_frees()
       }
     }
     g_tex_free_list.swap(keep_t);
+    g_pending_free_cnt.store(int(g_buf_free_list.size() + g_tex_free_list.size()), std::memory_order_relaxed);
   }
   /* WGPU_NO_DESTROY=buf|tex|all (debug): skip destroy() and only release, like before M2. */
   static const char *nd = getenv("WGPU_NO_DESTROY");
