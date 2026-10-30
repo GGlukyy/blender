@@ -493,6 +493,7 @@ if(WITH_WEBGPU_BACKEND)
     webgpu/webgpu_backend.hh
     webgpu/webgpu_batch.hh
     webgpu/webgpu_context.hh
+    webgpu/webgpu_heartbeat.hh
     webgpu/webgpu_framebuffer.hh
     webgpu/webgpu_immediate.hh
     webgpu/webgpu_index_buffer.hh

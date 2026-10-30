@@ -963,7 +963,9 @@ void WebGPUBatch::record_draw(int vertex_first,
 
     wgpu_note_compile();
     const double t_pipe0 = emscripten_get_now();
+    wgpu_hb_phase(WGPU_PH_PIPELINE);
     pipeline = wgpuDeviceCreateRenderPipeline(ctx->device(), &rpd);
+    wgpu_hb_phase(WGPU_PH_DRAW);
     {
       static const bool log_compile = getenv("WGPU_LOG_COMPILE") != nullptr;
       if (log_compile) {
@@ -1652,7 +1654,9 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
     rpd.depthStencil = has_depth ? &ds : nullptr;
 
     wgpu_note_compile();
+    wgpu_hb_phase(WGPU_PH_PIPELINE);
     pipeline = wgpuDeviceCreateRenderPipeline(ctx->device(), &rpd);
+    wgpu_hb_phase(WGPU_PH_DRAW);
     if (pipe_layout) {
       wgpuPipelineLayoutRelease(pipe_layout);
     }

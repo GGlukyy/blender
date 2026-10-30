@@ -23,6 +23,7 @@
 #include <webgpu/webgpu.h>
 
 #include "webgpu_framebuffer.hh"
+#include "webgpu_heartbeat.hh"
 #include "webgpu_shader.hh"
 
 #include <emscripten/emscripten.h>

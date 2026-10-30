@@ -81,6 +81,7 @@ void wgpu_note_compile() {}
 #endif
 
 namespace blender::gpu {
+std::atomic<uint32_t> g_wgpu_hb[8];
 /* DEBUG BISECT: when true, capture the last world draw's color attachment
  * (render_pass_end path) instead of the film output (read_color_sync path), to
  * tell whether the world pass writes red or the film compute loses it.
@@ -99,6 +100,7 @@ bool wgpu_env_cap_gbuf()
 }
 }  // namespace blender::gpu
 
+#include <malloc.h>
 #include <mutex>
 static std::mutex g_buf_free_mutex;
 /* Each entry carries the free-sequence number at free time: it may only be destroyed once no
@@ -108,6 +110,10 @@ static std::vector<std::pair<WGPUBuffer, uint64_t>> g_buf_free_list;
 static std::vector<std::pair<WGPUTexture, uint64_t>> g_tex_free_list;
 #ifdef __EMSCRIPTEN__
 /* T2 telemetry: number of destroyed-but-not-yet-released buffers + textures (read from JS). */
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t *wgpu_hb_ptr()
+{
+  return reinterpret_cast<uint32_t *>(blender::gpu::g_wgpu_hb);
+}
 extern "C" EMSCRIPTEN_KEEPALIVE int wgpu_pending_free_n()
 {
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
@@ -658,7 +664,9 @@ void WebGPUContext::flush_encoder()
   WGPUCommandBufferDescriptor cb_desc = {};
   WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder_, &cb_desc);
   if (queue_ && cmd) {
+    wgpu_hb_phase(WGPU_PH_SUBMIT);
     wgpuQueueSubmit(queue_, 1, &cmd);
+    wgpu_hb_phase(WGPU_PH_DRAW);
   }
   if (cmd) {
     wgpuCommandBufferRelease(cmd);
@@ -1530,6 +1538,9 @@ static bool g_wgpu_content_signaled = false;
 
 void WebGPUContext::present_backbuffer(int w, int h)
 {
+  wgpu_hb_phase(WGPU_PH_PRESENT);
+  g_wgpu_hb[1].fetch_add(1, std::memory_order_relaxed);
+  g_wgpu_hb[4].store(uint32_t(mallinfo().uordblks), std::memory_order_relaxed);
   if (device_ == nullptr) {
     return;
   }
@@ -1743,6 +1754,7 @@ extern "C" void blender_webgpu_present(int width, int height)
   WebGPUContext *ctx = WebGPUContext::get();
   if (ctx) {
     ctx->present_backbuffer(width, height);
+    blender::gpu::wgpu_hb_phase(blender::gpu::WGPU_PH_DRAW);
   }
 }
 extern "C" void blender_webgpu_backbuffer_size(int width, int height)
@@ -2582,7 +2594,9 @@ bool WebGPUContext::map_read_sync(WGPUBuffer buf, size_t size, void *dst)
   cb.userdata1 = &st;
   WGPUFuture fut = wgpuBufferMapAsync(buf, WGPUMapMode_Read, 0, size, cb);
   WGPUFutureWaitInfo wi = {fut, false};
+  wgpu_hb_phase(WGPU_PH_MAP_READ);
   const WGPUWaitStatus ws = wgpuInstanceWaitAny(webgpu_instance(), 1, &wi, UINT64_MAX);
+  wgpu_hb_phase(WGPU_PH_DRAW);
   if (ws != WGPUWaitStatus_Success || st.status != WGPUMapAsyncStatus_Success) {
     static int s_logged = 0;
     if (s_logged < 8) {

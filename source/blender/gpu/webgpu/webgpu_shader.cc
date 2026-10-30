@@ -58,7 +58,9 @@ static WGPUShaderModule webgpu_module_from_wgsl(const std::string &wgsl)
   desc.nextInChain = &src.chain;
   wgpu_note_compile();
   const double t_mod0 = emscripten_get_now();
+  wgpu_hb_phase(WGPU_PH_SHADER_MODULE);
   WGPUShaderModule mod = wgpuDeviceCreateShaderModule(device, &desc);
+  wgpu_hb_phase(WGPU_PH_DRAW);
   {
     static const bool log_compile = getenv("WGPU_LOG_COMPILE") != nullptr;
     if (log_compile) {
