@@ -2089,6 +2089,17 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
   }
   ShaderInterface *iface = shader->interface;
   std::vector<WGPUBindGroupEntry> entries;
+  /* snapshot_for_sampling() returns a NEW view every call (D6: leaked ~30 views/s in EEVEE, the JS wrapper stayed alive forever):
+   * the bind group (and the cache, via AddRef below) keep their own reference, so drop ours on every exit path. */
+  struct OwnedViews {
+    std::vector<WGPUTextureView> v;
+    ~OwnedViews()
+    {
+      for (WGPUTextureView x : v) {
+        wgpuTextureViewRelease(x);
+      }
+    }
+  } owned_views;
   bool incomplete = false;
   extern int g_stat_bindgroups;
   g_stat_bindgroups++;
@@ -2311,6 +2322,7 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
           fflush(stderr);
         }
         entries[i].textureView = snap;
+        owned_views.v.push_back(snap);
       }
       break;
     }
