@@ -38,6 +38,10 @@ WebGPUStorageBuf::~WebGPUStorageBuf()
     wgpu_buffer_free(buffer_);
     buffer_ = nullptr;
   }
+  if (read_staging_) {
+    wgpu_buffer_free(read_staging_);
+    read_staging_ = nullptr;
+  }
   MEM_SAFE_DELETE_VOID(data_);
 }
 
@@ -181,11 +185,19 @@ void WebGPUStorageBuf::read(void *data)
      * picks). Falls back to the host mirror on map failure. */
     ctx->flush_if_pass_open("ssbo_read");
     const size_t asz = (size_in_bytes_ + 3) & ~size_t(3);
-    WGPUBufferDescriptor bd = {};
-    bd.label = {"ssbo_read_staging", WGPU_STRLEN};
-    bd.size = asz;
-    bd.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
-    WGPUBuffer st = wgpuDeviceCreateBuffer(ctx->device(), &bd);
+    if (read_staging_ != nullptr && read_staging_size_ != asz) {
+      wgpu_buffer_free(read_staging_);
+      read_staging_ = nullptr;
+    }
+    if (read_staging_ == nullptr) {
+      WGPUBufferDescriptor bd = {};
+      bd.label = {"ssbo_read_staging", WGPU_STRLEN};
+      bd.size = asz;
+      bd.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+      read_staging_ = wgpuDeviceCreateBuffer(ctx->device(), &bd);
+      read_staging_size_ = asz;
+    }
+    WGPUBuffer st = read_staging_;
     if (st != nullptr) {
       WGPUCommandEncoder enc = ctx->ensure_encoder();
       if (enc != nullptr) {
@@ -198,11 +210,12 @@ void WebGPUStorageBuf::read(void *data)
             /* Keep the host mirror coherent. */
             memcpy(data_, tmp.data(), size_in_bytes_);
           }
-          wgpu_buffer_free(st);
-          return;
+          return; /* Staging buffer is unmapped again by map_read_sync -> reusable. */
         }
       }
+      /* Failed map: state unknown, never reuse. */
       wgpu_buffer_free(st);
+      read_staging_ = nullptr;
     }
   }
   /* Fallback: last host-written contents. */

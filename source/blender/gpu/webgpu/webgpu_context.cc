@@ -187,8 +187,13 @@ WGPUBuffer wgpu_buffer_acquire(WGPUDevice dev, const WGPUBufferDescriptor *d)
   return wgpuDeviceCreateBuffer(dev, d);
 }
 uint64_t wgpu_min_recording_seq();
+namespace blender::gpu {
+void wgpu_process_events();
+}
 void wgpu_flush_buffer_frees()
 {
+  /* Finish map events of failed sync readbacks (see map_read_sync). */
+  blender::gpu::wgpu_process_events();
   /* Only entries freed before every recording context's encoder started are safe to destroy. */
   const uint64_t limit = wgpu_min_recording_seq();
   std::vector<WGPUBuffer> list;
@@ -345,6 +350,13 @@ static WGPUInstance webgpu_instance()
     s_instance = wgpuCreateInstance(&idesc);
   }
   return s_instance;
+}
+
+void wgpu_process_events()
+{
+  if (WGPUInstance inst = webgpu_instance()) {
+    wgpuInstanceProcessEvents(inst);
+  }
 }
 
 WebGPUContext::WebGPUContext(GHOST_IWindow * /*ghost_window*/,
@@ -2601,28 +2613,62 @@ bool WebGPUContext::map_read_sync(WGPUBuffer buf, size_t size, void *dst)
   if (buf == nullptr || dst == nullptr) {
     return false;
   }
+  /* No JSPI/Asyncify (iPad Safari, this build): the blocking wait fails with WaitStatus Error on every call, so after the
+   * first such failure (and no success so far) stop issuing mapAsync at all — each one leaked its buffer (D6). */
+  static bool s_ever_ok = false, s_dead = false;
+  if (s_dead) {
+    return false;
+  }
+  /* D6: with WaitAnyOnly a FAILED wait (ws=3, no JSPI on Safari/Chrome here) left the map event unprocessed forever -> the buffer
+   * reference held by the event was never dropped (~10 leaked JS wrappers/s). AllowProcessEvents + heap state lets
+   * wgpuInstanceProcessEvents() (once per frame, wgpu_flush_buffer_frees) finish the event later. */
   struct MapState {
     WGPUMapAsyncStatus status = WGPUMapAsyncStatus_Error;
-  } st;
-  WGPUBufferMapCallbackInfo cb = {};
-  cb.mode = WGPUCallbackMode_WaitAnyOnly;
-  cb.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void *ud1, void *) {
-    static_cast<MapState *>(ud1)->status = status;
+    bool done = false;
+    bool abandoned = false;
   };
-  cb.userdata1 = &st;
+  MapState *st = new MapState();
+  WGPUBufferMapCallbackInfo cb = {};
+  cb.mode = WGPUCallbackMode_AllowProcessEvents;
+  cb.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void *ud1, void *) {
+    MapState *m = static_cast<MapState *>(ud1);
+    m->status = status;
+    m->done = true;
+    if (m->abandoned) {
+      delete m;
+    }
+  };
+  cb.userdata1 = st;
   WGPUFuture fut = wgpuBufferMapAsync(buf, WGPUMapMode_Read, 0, size, cb);
   WGPUFutureWaitInfo wi = {fut, false};
   wgpu_hb_phase(WGPU_PH_MAP_READ);
   const WGPUWaitStatus ws = wgpuInstanceWaitAny(webgpu_instance(), 1, &wi, UINT64_MAX);
   wgpu_hb_phase(WGPU_PH_DRAW);
-  if (ws != WGPUWaitStatus_Success || st.status != WGPUMapAsyncStatus_Success) {
+  if (ws != WGPUWaitStatus_Success || st->status != WGPUMapAsyncStatus_Success) {
     static int s_logged = 0;
     if (s_logged < 8) {
       s_logged++;
-      fprintf(stderr, "WGPU_MAP sync map failed ws=%d st=%d\n", int(ws), int(st.status));
+      fprintf(stderr, "WGPU_MAP sync map failed ws=%d st=%d\n", int(ws), int(st->status));
+      fflush(stderr);
+    }
+    if (st->done) {
+      delete st;
+    }
+    else {
+      st->abandoned = true; /* the callback (from ProcessEvents) deletes it */
+    }
+    if (ws == WGPUWaitStatus_Error && !s_ever_ok) {
+      s_dead = true;
+      fprintf(stderr, "WGPU_MAP sync readback unsupported (no JSPI) -> disabled, callers use host fallback\n");
       fflush(stderr);
     }
     return false;
+  }
+  delete st;
+  if (!s_ever_ok) {
+    s_ever_ok = true;
+    fprintf(stderr, "WGPU_MAP sync readback works (first success)\n");
+    fflush(stderr);
   }
   const void *p = wgpuBufferGetConstMappedRange(buf, 0, size);
   if (p == nullptr) {
