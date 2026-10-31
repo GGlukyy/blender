@@ -335,6 +335,13 @@ bool WebGPUTexture::init_internal()
     }
   }
 
+  /* bind_no_srgb(): attach an sRGB texture as raw RGBA8Unorm so clears/writes are not encoded by the
+   * hardware (Vulkan does the same with a UNORM image view; V1: node editor background came out #5a5a5a). */
+  static const WGPUTextureFormat k_unorm_view = WGPUTextureFormat_RGBA8Unorm;
+  if (wgpu_format_ == WGPUTextureFormat_RGBA8UnormSrgb) {
+    desc.viewFormatCount = 1;
+    desc.viewFormats = &k_unorm_view;
+  }
   texture_ = wgpuDeviceCreateTexture(ctx->device(), &desc);
   if (getenv("WGPU_LOG_TEXCREATE")) {
     fprintf(stderr, "WGPU_TEXCREATE '%s' %ux%ux%u fmt=%d usage=0x%x mips=%u\n",
@@ -380,20 +387,21 @@ static bool webgpu_format_has_stencil(WGPUTextureFormat f)
          f == WGPUTextureFormat_Depth32FloatStencil8;
 }
 
-WGPUTextureView WebGPUTexture::wgpu_attachment_view(int layer, int mip)
+WGPUTextureView WebGPUTexture::wgpu_attachment_view(int layer, int mip, bool raw_unorm)
 {
   if (texture_ == nullptr) {
     return nullptr;
   }
+  const bool as_unorm = raw_unorm && wgpu_format_ == WGPUTextureFormat_RGBA8UnormSrgb;
   const uint32_t l = uint32_t(std::max(layer, 0) + view_layer_);
   const uint32_t m = uint32_t(std::max(mip, 0) + view_mip_);
-  const uint32_t key = (l << 8) | m;
+  const uint32_t key = (l << 8) | m | (as_unorm ? 0x80000000u : 0u);
   auto it = attachment_views_.find(key);
   if (it != attachment_views_.end()) {
     return it->second;
   }
   WGPUTextureViewDescriptor vd = {};
-  vd.format = wgpu_format_;
+  vd.format = as_unorm ? WGPUTextureFormat_RGBA8Unorm : wgpu_format_;
   vd.dimension = WGPUTextureViewDimension_2D;
   vd.baseMipLevel = m;
   vd.mipLevelCount = 1;

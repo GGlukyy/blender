@@ -108,7 +108,7 @@ class WebGPUTexture : public Texture {
   }
   /* View for use as a render-pass attachment: a single mip of a single layer
    * (WebGPU render attachments must have exactly one layer). layer < 0 = 0. */
-  WGPUTextureView wgpu_attachment_view(int layer, int mip);
+  WGPUTextureView wgpu_attachment_view(int layer, int mip, bool raw_unorm = false);
   /* View for use in a sampled-texture binding: depth-only aspect for
    * depth-stencil formats, the default whole-texture view otherwise. */
   WGPUTextureView wgpu_sample_view();

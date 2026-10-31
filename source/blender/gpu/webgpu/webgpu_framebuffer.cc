@@ -207,8 +207,12 @@ WGPUTextureFormat WebGPUFrameBuffer::color_format(int slot) const
     return WGPUTextureFormat_R8Unorm; /* The dummy attachment. */
   }
   gpu::Texture *t = color_tex(slot);
-  return t ? webgpu_texture_format(static_cast<WebGPUTexture *>(t)->format_get()) :
-             WGPUTextureFormat_Undefined;
+  if (!t) {
+    return WGPUTextureFormat_Undefined;
+  }
+  const WGPUTextureFormat f = webgpu_texture_format(static_cast<WebGPUTexture *>(t)->format_get());
+  /* bind_no_srgb(): sRGB attachments are rendered as raw UNORM (see WebGPUTexture::wgpu_attachment_view). */
+  return (!enabled_srgb_ && f == WGPUTextureFormat_RGBA8UnormSrgb) ? WGPUTextureFormat_RGBA8Unorm : f;
 }
 
 WGPUTextureFormat WebGPUFrameBuffer::depth_format() const
@@ -241,8 +245,8 @@ WGPURenderPassEncoder WebGPUFrameBuffer::begin_render_pass(WGPUCommandEncoder en
      * single-layer view of the attached layer/mip. Layered rendering
      * (layer == -1 on an array texture, selected via gl_Layer) has no WebGPU
      * equivalent; those passes bind layer 0. */
-    WGPUTextureView view = static_cast<WebGPUTexture *>(att.tex)->wgpu_attachment_view(att.layer,
-                                                                                       att.mip);
+    WGPUTextureView view = static_cast<WebGPUTexture *>(att.tex)->wgpu_attachment_view(
+        att.layer, att.mip, !enabled_srgb_);
     if (!view) {
       continue;
     }
