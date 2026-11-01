@@ -110,12 +110,65 @@ static int element_size(const gpu::VertBuf &src, const gpu::VertBuf &dst)
   return size;
 }
 
+/* WebGPU: the corner buffers are read back on the CPU (point-sprite expansion of edit-mode vertex
+ * dots de-indexes on the CPU and there is no synchronous GPU readback without JSPI). Doing the
+ * gather/scatter on the CPU leaves a full CPU shadow in the destination (full update_sub). */
+static bool use_cpu_corner_path(gpu::VertBuf &src, gpu::VertBuf &dst)
+{
+#ifdef __EMSCRIPTEN__ /* The web build only has the WebGPU backend (GPU_backend_get_type() does not know it). */
+  return src.data<uint8_t>().data() != nullptr && GPU_vertbuf_get_vertex_len(&dst) > 0;
+#else
+  UNUSED_VARS(src, dst);
+  return false;
+#endif
+}
+
+static void gather_to_corner_cpu(const MeshRenderData &mr,
+                                 gpu::VertBuf &src,
+                                 gpu::VertBuf &indices,
+                                 gpu::VertBuf &dst)
+{
+  const int size = element_size(src, dst);
+  Array<uint8_t> tmp(size_t(GPU_vertbuf_get_vertex_len(&dst)) * size, 0);
+  const uint8_t *src_data = src.data<uint8_t>().data();
+  const int *idx = indices.data<int>().data();
+  threading::parallel_for(IndexRange(mr.corners_num), 4096, [&](const IndexRange range) {
+    for (const int c : range) {
+      memcpy(&tmp[size_t(c) * size], src_data + size_t(idx[c]) * size, size);
+    }
+  });
+  GPU_vertbuf_update_sub(&dst, 0, tmp.size(), tmp.data());
+}
+
+static void scatter_face_to_corner_cpu(const MeshRenderData &mr,
+                                       MeshBufferCache &cache,
+                                       gpu::VertBuf &src,
+                                       gpu::VertBuf &dst)
+{
+  const int size = element_size(src, dst);
+  Array<uint8_t> tmp(size_t(GPU_vertbuf_get_vertex_len(&dst)) * size, 0);
+  const uint8_t *src_data = src.data<uint8_t>().data();
+  const int *offsets = face_offsets_ensure(mr, cache).data<int>().data();
+  threading::parallel_for(IndexRange(mr.faces_num), 2048, [&](const IndexRange range) {
+    for (const int f : range) {
+      for (int c = offsets[f]; c < offsets[f + 1]; c++) {
+        memcpy(&tmp[size_t(c) * size], src_data + size_t(f) * size, size);
+      }
+    }
+  });
+  GPU_vertbuf_update_sub(&dst, 0, tmp.size(), tmp.data());
+}
+
 static void gather_to_corner_gpu(const MeshRenderData &mr,
                                  gpu::VertBuf &src,
                                  gpu::VertBuf &indices,
                                  gpu::VertBuf &dst)
 {
   BLI_assert(GPU_vertbuf_get_vertex_len(&dst) >= mr.corners_num);
+  if (use_cpu_corner_path(src, dst) && indices.data<int>().data() != nullptr) {
+    gather_to_corner_cpu(mr, src, indices, dst);
+    return;
+  }
   gpu::Shader *shader = DRW_shader_mesh_gather_get(element_size(src, dst));
   GPU_shader_bind(shader);
   GPU_vertbuf_bind_as_ssbo(&src, 0);
@@ -160,6 +213,10 @@ void scatter_face_to_corner_gpu(const MeshRenderData &mr,
   }
   BLI_assert(GPU_vertbuf_get_vertex_len(&src) == mr.faces_num);
   BLI_assert(GPU_vertbuf_get_vertex_len(&dst) >= mr.corners_num);
+  if (use_cpu_corner_path(src, dst) && face_offsets_ensure(mr, cache).data<int>().data() != nullptr) {
+    scatter_face_to_corner_cpu(mr, cache, src, dst);
+    return;
+  }
   gpu::Shader *shader = DRW_shader_mesh_scatter_faces_get(element_size(src, dst));
   GPU_shader_bind(shader);
   GPU_vertbuf_bind_as_ssbo(&src, 0);
