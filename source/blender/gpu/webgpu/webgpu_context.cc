@@ -684,7 +684,7 @@ void WebGPUContext::flush_encoder()
   if (queue_ && cmd) {
     wgpu_hb_phase(WGPU_PH_SUBMIT);
     wgpuQueueSubmit(queue_, 1, &cmd);
-    wgpu_hb_phase(WGPU_PH_DRAW);
+    wgpu_hb_back();
   }
   if (cmd) {
     wgpuCommandBufferRelease(cmd);
@@ -1772,7 +1772,7 @@ extern "C" void blender_webgpu_present(int width, int height)
   WebGPUContext *ctx = WebGPUContext::get();
   if (ctx) {
     ctx->present_backbuffer(width, height);
-    blender::gpu::wgpu_hb_phase(blender::gpu::WGPU_PH_DRAW);
+    blender::gpu::wgpu_hb_phase(blender::gpu::WGPU_PH_IDLE);
   }
 }
 extern "C" void blender_webgpu_backbuffer_size(int width, int height)
@@ -2643,7 +2643,7 @@ bool WebGPUContext::map_read_sync(WGPUBuffer buf, size_t size, void *dst)
   WGPUFutureWaitInfo wi = {fut, false};
   wgpu_hb_phase(WGPU_PH_MAP_READ);
   const WGPUWaitStatus ws = wgpuInstanceWaitAny(webgpu_instance(), 1, &wi, UINT64_MAX);
-  wgpu_hb_phase(WGPU_PH_DRAW);
+  wgpu_hb_back();
   if (ws != WGPUWaitStatus_Success || st->status != WGPUMapAsyncStatus_Success) {
     static int s_logged = 0;
     if (s_logged < 8) {

@@ -24,6 +24,7 @@ enum WebGPUPhase : uint32_t {
   WGPU_PH_MAP_READ = 4,
   WGPU_PH_SUBMIT = 5,
   WGPU_PH_PRESENT = 6,
+  WGPU_PH_IDLE = 7, /* after present until the next begin_frame: waiting for events/vsync, not hung */
 };
 
 /* [0] seq (bumped on every phase change), [1] frame (presents), [2] phase, [3] id,
@@ -35,6 +36,15 @@ inline void wgpu_hb_phase(WebGPUPhase phase, uint32_t id = 0)
   g_wgpu_hb[2].store(uint32_t(phase), std::memory_order_relaxed);
   g_wgpu_hb[3].store(id, std::memory_order_relaxed);
   g_wgpu_hb[0].fetch_add(1, std::memory_order_relaxed);
+}
+
+/* Nesting depth of GPU_context_begin_frame/end_frame (render thread only). */
+inline int g_wgpu_frame_depth = 0;
+
+/* Leave a short phase (submit/pipeline/…): back to DRAW inside a frame, IDLE outside of it. */
+inline void wgpu_hb_back()
+{
+  wgpu_hb_phase(g_wgpu_frame_depth > 0 ? WGPU_PH_DRAW : WGPU_PH_IDLE);
 }
 
 }  // namespace blender::gpu

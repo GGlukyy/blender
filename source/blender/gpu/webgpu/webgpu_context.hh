@@ -188,8 +188,20 @@ class WebGPUContext : public Context {
     /* K3b: an idle context must not keep an unsubmitted encoder (it blocks freeing buffers). */
     submit();
   }
-  void begin_frame() override {}
-  void end_frame() override {}
+  /* Heartbeat: DRAW while any context is inside begin/end_frame (the draw-manager context nests in the
+   * window's), IDLE otherwise — so a large rt_phase_ms in "draw" means a real hang, not waiting for events. */
+  void begin_frame() override
+  {
+    g_wgpu_frame_depth++;
+    wgpu_hb_phase(WGPU_PH_DRAW);
+  }
+  void end_frame() override
+  {
+    if (--g_wgpu_frame_depth <= 0) {
+      g_wgpu_frame_depth = 0;
+      wgpu_hb_phase(WGPU_PH_IDLE);
+    }
+  }
   void flush() override;
   void finish() override;
 

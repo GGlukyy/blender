@@ -895,6 +895,18 @@ void WebGPUBatch::record_draw(int vertex_first,
     }
     for (int i = 0; i < color_count; i++) {
       targets[i].format = color_fmt[i];
+      if (color_fmt[i] == WGPUTextureFormat_Undefined) {
+        /* H26 diagnostics: a hole in the colour attachments (Safari throws "TypeError" on it). */
+        static int s_hole_log = 0;
+        if (s_hole_log < 12) {
+          s_hole_log++;
+          fprintf(stderr, "WGPU_COLOR_HOLE shader='%s' fb='%s' slot=%d/%d out_mask=0x%x fmts=%d,%d,%d,%d\n",
+                  shader->name_get().c_str(), fb->name_get(), i, color_count, out_mask,
+                  int(color_fmt[0]), int(color_count > 1 ? color_fmt[1] : 0),
+                  int(color_count > 2 ? color_fmt[2] : 0), int(color_count > 3 ? color_fmt[3] : 0));
+          fflush(stderr);
+        }
+      }
       /* A color target with no matching fragment output must have writeMask 0
        * (EEVEE prepasses bind targets their fragment shader never writes). */
       targets[i].writeMask = (out_mask & (1u << i)) ? color_write : WGPUColorWriteMask_None;
@@ -980,7 +992,7 @@ void WebGPUBatch::record_draw(int vertex_first,
     const double t_pipe0 = emscripten_get_now();
     wgpu_hb_phase(WGPU_PH_PIPELINE);
     pipeline = wgpuDeviceCreateRenderPipeline(ctx->device(), &rpd);
-    wgpu_hb_phase(WGPU_PH_DRAW);
+    wgpu_hb_back();
     {
       static const bool log_compile = getenv("WGPU_LOG_COMPILE") != nullptr;
       if (log_compile) {
@@ -1605,6 +1617,18 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
     }
     for (int i = 0; i < color_count; i++) {
       targets[i].format = color_fmt[i];
+      if (color_fmt[i] == WGPUTextureFormat_Undefined) {
+        /* H26 diagnostics: a hole in the colour attachments (Safari throws "TypeError" on it). */
+        static int s_hole_log = 0;
+        if (s_hole_log < 12) {
+          s_hole_log++;
+          fprintf(stderr, "WGPU_COLOR_HOLE shader='%s' fb='%s' slot=%d/%d out_mask=0x%x fmts=%d,%d,%d,%d\n",
+                  shader->name_get().c_str(), fb->name_get(), i, color_count, out_mask,
+                  int(color_fmt[0]), int(color_count > 1 ? color_fmt[1] : 0),
+                  int(color_count > 2 ? color_fmt[2] : 0), int(color_count > 3 ? color_fmt[3] : 0));
+          fflush(stderr);
+        }
+      }
       targets[i].writeMask = (out_mask & (1u << i)) ? color_write : WGPUColorWriteMask_None;
       targets[i].blend = has_blend ? &blend_state : nullptr;
     }
@@ -1672,7 +1696,7 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
     wgpu_note_compile();
     wgpu_hb_phase(WGPU_PH_PIPELINE);
     pipeline = wgpuDeviceCreateRenderPipeline(ctx->device(), &rpd);
-    wgpu_hb_phase(WGPU_PH_DRAW);
+    wgpu_hb_back();
     if (pipe_layout) {
       wgpuPipelineLayoutRelease(pipe_layout);
     }
