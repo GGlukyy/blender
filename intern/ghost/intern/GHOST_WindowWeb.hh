@@ -22,6 +22,9 @@
 extern "C" void blender_webgpu_present(int width, int height);
 extern "C" void blender_webgpu_backbuffer_size(int width, int height);
 
+/** Pointer Lock for Wrap/Hide cursor grab (continuous grab), defined in GHOST_SystemWeb.cc. */
+void ghost_web_set_pointer_lock(bool lock);
+
 class GHOST_WindowWeb : public GHOST_Window {
  private:
   uint32_t width_, height_;
@@ -67,8 +70,9 @@ class GHOST_WindowWeb : public GHOST_Window {
   {
     return GHOST_kSuccess;
   }
-  GHOST_TSuccess setWindowCursorGrab(GHOST_TGrabCursorMode /*mode*/) override
+  GHOST_TSuccess setWindowCursorGrab(GHOST_TGrabCursorMode mode) override
   {
+    ghost_web_set_pointer_lock(mode == GHOST_kGrabWrap || mode == GHOST_kGrabHide);
     return GHOST_kSuccess;
   }
   GHOST_TSuccess setWindowCursorShape(GHOST_TStandardCursor /*shape*/) override

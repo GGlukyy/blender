@@ -105,6 +105,28 @@ static GHOST_TabletData web_tablet_data()
   return td;
 }
 
+/* Continuous grab (drag a value / G R S past the canvas edge): the browser cannot warp the cursor,
+ * so while Blender asks for a Wrap/Hide grab we hold a Pointer Lock and integrate `movementX/Y`
+ * into an unbounded cursor position (what the X11 backend reports: wrapped position + accum).
+ * If the lock is refused (iPad, no user gesture) nothing changes: absolute coordinates as before. */
+static bool g_web_pointer_locked = false;
+
+static bool web_pointerlock_cb(int /*type*/, const EmscriptenPointerlockChangeEvent *e, void * /*user*/)
+{
+  g_web_pointer_locked = e->isActive;
+  return false;
+}
+
+void ghost_web_set_pointer_lock(bool lock)
+{
+  if (lock) {
+    emscripten_request_pointerlock(WEB_CANVAS, false);
+  }
+  else {
+    emscripten_exit_pointerlock();
+  }
+}
+
 static bool web_mouse_cb(int type, const EmscriptenMouseEvent *e, void *user)
 {
   return static_cast<GHOST_SystemWeb *>(user)->handleMouse(type, e);
@@ -233,6 +255,8 @@ GHOST_TSuccess GHOST_SystemWeb::init()
   emscripten_set_mousedown_callback(WEB_CANVAS, this, false, web_mouse_cb);
   emscripten_set_mouseup_callback(WEB_CANVAS, this, false, web_mouse_cb);
   emscripten_set_mousemove_callback(WEB_CANVAS, this, false, web_mouse_cb);
+  emscripten_set_pointerlockchange_callback(
+      EMSCRIPTEN_EVENT_TARGET_DOCUMENT, this, false, web_pointerlock_cb);
   emscripten_set_wheel_callback(WEB_CANVAS, this, false, web_wheel_cb);
   emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, this, false, web_key_cb);
   emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, this, false, web_key_cb);
@@ -293,8 +317,14 @@ bool GHOST_SystemWeb::handleMouse(int event_type, const EmscriptenMouseEvent *e)
     return false;
   }
   const uint64_t t = getMilliSeconds();
-  cursor_x_ = int32_t(e->targetX * web_dpr());
-  cursor_y_ = int32_t(e->targetY * web_dpr());
+  if (g_web_pointer_locked && event_type == EMSCRIPTEN_EVENT_MOUSEMOVE) {
+    cursor_x_ += int32_t(e->movementX * web_dpr());
+    cursor_y_ += int32_t(e->movementY * web_dpr());
+  }
+  else if (!g_web_pointer_locked) {
+    cursor_x_ = int32_t(e->targetX * web_dpr());
+    cursor_y_ = int32_t(e->targetY * web_dpr());
+  }
 
   modifiers_.set(GHOST_kModifierKeyLeftShift, e->shiftKey);
   modifiers_.set(GHOST_kModifierKeyLeftControl, e->ctrlKey);
