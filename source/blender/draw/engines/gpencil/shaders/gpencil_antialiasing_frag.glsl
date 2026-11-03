@@ -30,6 +30,9 @@ void main()
       uvs, pixcoord, offset, edges_tx, area_tx, search_tx, float4(0));
 
 #elif SMAA_STAGE == 2
+#  ifdef SMAA_NO_DUAL_SOURCE
+  float4 out_reveal;
+#  endif
   /* Resolve both buffers. */
   if (do_anti_aliasing) {
     out_color = SMAANeighborhoodBlendingPS(uvs, offset[0], color_tx, blend_tx);
@@ -52,5 +55,8 @@ void main()
     out_color = float4(0.0f);
     out_reveal.rgb = out_reveal.aaa;
   }
+#  ifdef SMAA_NO_DUAL_SOURCE
+  out_color = reveal_pass ? out_reveal : out_color;
+#  endif
 #endif
 }

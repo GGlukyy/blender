@@ -36,6 +36,8 @@ class ShaderCache {
   StaticShader antialiasing[3] = {{"gpencil_antialiasing_stage_0"},
                                   {"gpencil_antialiasing_stage_1"},
                                   {"gpencil_antialiasing_stage_2"}};
+  /* Same as stage 2 without dual-source blending (web, when the device lacks it). */
+  StaticShader antialiasing_nodual = {"gpencil_antialiasing_stage_2_nodual"};
   /* Accumulation antialiasing */
   StaticShader accumulation = {"gpencil_antialiasing_accumulation"};
   /* GPencil Object rendering */

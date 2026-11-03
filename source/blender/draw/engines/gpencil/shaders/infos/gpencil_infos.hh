@@ -197,6 +197,25 @@ ADDITIONAL_INFO(gpencil_antialiasing)
 DO_STATIC_COMPILATION()
 GPU_SHADER_CREATE_END()
 
+/* Fallback without dual-source blending (iPad / Safari: pipeline creation fails). The resolve is
+ * done in two draws, `reveal_pass` selecting which of the two outputs is written:
+ * 1) dst *= reveal (BLEND_MUL), 2) dst += color (BLEND_ADD_FULL). Same result as dual-source. */
+GPU_SHADER_CREATE_INFO(gpencil_antialiasing_stage_2_nodual)
+DEFINE_VALUE("SMAA_STAGE", "2")
+DEFINE("SMAA_NO_DUAL_SOURCE")
+SAMPLER(0, sampler2D, color_tx)
+SAMPLER(1, sampler2D, reveal_tx)
+SAMPLER(2, sampler2D, blend_tx)
+PUSH_CONSTANT(float, mix_factor)
+PUSH_CONSTANT(float, taa_accumulated_weight)
+PUSH_CONSTANT(bool, do_anti_aliasing)
+PUSH_CONSTANT(bool, only_alpha)
+PUSH_CONSTANT(bool, reveal_pass)
+FRAGMENT_OUT(0, float4, out_color)
+ADDITIONAL_INFO(gpencil_antialiasing)
+DO_STATIC_COMPILATION()
+GPU_SHADER_CREATE_END()
+
 GPU_SHADER_CREATE_INFO(gpencil_antialiasing_accumulation)
 IMAGE(0, GPENCIL_RENDER_FORMAT, read, image2D, src_img)
 IMAGE(1, GPENCIL_ACCUM_FORMAT, read_write, image2D, dst_img)
