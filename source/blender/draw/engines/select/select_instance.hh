@@ -336,11 +336,54 @@ struct SelectMap {
     const float4x4 pv = view.winmat() * view.viewmat();
     const float4x4 pv_inv = math::invert(pv);
 
+    /* Objects whose bones are individually selectable (edit/pose mode): their object-level AABB
+     * entry must not take part, it is nearer than the bone hits and Blender then picks no bone. */
+    constexpr uint kBoneSelAny = (1u << 29) | (1u << 30) | (1u << 31); /* BONESEL_ANY (ED_armature.hh) */
+    Vector<uint> bone_pick_objects;
+    for (const int i : bounds_map.index_range()) {
+      if (has_seg_map[i] && (select_id_map[i] & kBoneSelAny)) {
+        bone_pick_objects.append_non_duplicates(select_id_map[i] & 0xFFFFu);
+      }
+    }
+
     if (info_buf.mode == SelectType::SELECT_ALL) {
       /* Box/lasso "select everything in rect": the pick winmat maps the rect to
        * the full NDC cube, so an object is inside iff its projected AABB
        * overlaps [-1,1]². Conservative for corners behind the eye. */
       for (const int i : bounds_map.index_range()) {
+        if (has_seg_map[i]) {
+          /* Bone: its projected head-tail segment must touch the rect (Liang-Barsky on [-1,1]²). */
+          const float4 ha = pv * float4(seg_map[i].first, 1.0f);
+          const float4 hb = pv * float4(seg_map[i].second, 1.0f);
+          bool hit = false;
+          if (ha.w > 1e-8f && hb.w > 1e-8f) {
+            const float2 a = float2(ha.x, ha.y) / ha.w;
+            const float2 d = float2(hb.x, hb.y) / hb.w - a;
+            float t0 = 0.0f, t1 = 1.0f;
+            hit = true;
+            for (int k = 0; k < 4 && hit; k++) {
+              const float p = (k & 1) ? d[k >> 1] : -d[k >> 1];
+              const float q = (k & 1) ? 1.0f - a[k >> 1] : a[k >> 1] + 1.0f;
+              if (std::abs(p) < 1e-12f) {
+                hit = q >= 0.0f;
+              }
+              else {
+                const float r = q / p;
+                if (p < 0.0f) {
+                  t0 = math::max(t0, r);
+                }
+                else {
+                  t1 = math::min(t1, r);
+                }
+                hit = t0 <= t1;
+              }
+            }
+          }
+          if (hit) {
+            select_output_buf[i / 32] |= 1u << (i % 32);
+          }
+          continue;
+        }
         const float3 &bmin = bounds_map[i].first;
         const float3 &bmax = bounds_map[i].second;
         float2 ndc_min(FLT_MAX), ndc_max(-FLT_MAX);
@@ -372,15 +415,6 @@ struct SelectMap {
     const float3 p0 = math::project_point(pv_inv, float3(0.0f, 0.0f, -1.0f));
     const float3 p1 = math::project_point(pv_inv, float3(0.0f, 0.0f, 1.0f));
     const float3 dir = math::normalize(p1 - p0);
-    /* Objects whose bones are individually selectable (edit/pose mode): their object-level AABB
-     * entry must not take part, it is nearer than the bone hits and Blender then picks no bone. */
-    constexpr uint kBoneSelAny = (1u << 29) | (1u << 30) | (1u << 31); /* BONESEL_ANY (ED_armature.hh) */
-    Vector<uint> bone_pick_objects;
-    for (const int i : bounds_map.index_range()) {
-      if (has_seg_map[i] && (select_id_map[i] & kBoneSelAny)) {
-        bone_pick_objects.append_non_duplicates(select_id_map[i] & 0xFFFFu);
-      }
-    }
     for (const int i : bounds_map.index_range()) {
       if (!has_seg_map[i] && !(select_id_map[i] & kBoneSelAny) &&
           bone_pick_objects.contains(select_id_map[i] & 0xFFFFu))
