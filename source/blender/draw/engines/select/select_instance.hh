@@ -351,6 +351,11 @@ struct SelectMap {
        * the full NDC cube, so an object is inside iff its projected AABB
        * overlaps [-1,1]². Conservative for corners behind the eye. */
       for (const int i : bounds_map.index_range()) {
+        if (!has_seg_map[i] && !(select_id_map[i] & kBoneSelAny) &&
+            bone_pick_objects.contains(select_id_map[i] & 0xFFFFu))
+        {
+          continue; /* object-level entry decodes as bone 0 */
+        }
         if (has_seg_map[i]) {
           /* Bone: its projected head-tail segment must touch the rect (Liang-Barsky on [-1,1]²). */
           const float4 ha = pv * float4(seg_map[i].first, 1.0f);
