@@ -3,7 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import array
-import ctypes
+try:
+    import ctypes
+except ImportError:  # web build: CPython without _ctypes (no native libs there either)
+    ctypes = None
 from .gltf2_io_gltf import ImportError
 from ..com.library import dll_path
 import bpy

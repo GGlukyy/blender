@@ -1389,6 +1389,14 @@ static Vector<char> imb_icc_profile_from_filepath(StringRef filepath)
   if (!f.read(icc_profile.data(), icc_profile.size())) {
     icc_profile.clear();
   }
+#ifdef __EMSCRIPTEN__
+  /* A valid ICC profile is at least 132 bytes (128 byte header + tag count). The shipped
+   * srgb_rec709_display.icc is only a 128 byte header; libpng rejects it ("ICC profile too short")
+   * and PNG writing fails entirely. Treat it as "no profile". */
+  if (icc_profile.size() < 132) {
+    icc_profile.clear();
+  }
+#endif
   return icc_profile;
 }
 

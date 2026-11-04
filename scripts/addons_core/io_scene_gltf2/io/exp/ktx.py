@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import ctypes
+try:
+    import ctypes
+except ImportError:  # web build: CPython without _ctypes (no native libs there either)
+    ctypes = None
 import numpy as np
 
 from ...io.com.library import dll_path
