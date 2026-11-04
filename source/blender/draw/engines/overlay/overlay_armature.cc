@@ -1645,12 +1645,16 @@ static void bone_draw(const eArmature_Drawtype drawtype,
       bmax = math::max(bmax, p);
     }
     ctx->res->bone_bounds_override = std::make_pair(bmin, bmax);
+    ctx->res->bone_segment_override = std::make_pair(
+        math::transform_point(world, float3(0.0f)),
+        math::transform_point(world, float3(0.0f, 1.0f, 0.0f)));
   }
   struct BoneBoundsReset {
     const Armatures::DrawContext *ctx;
     ~BoneBoundsReset()
     {
       ctx->res->bone_bounds_override.reset();
+      ctx->res->bone_segment_override.reset();
     }
   } bone_bounds_reset{ctx};
 #endif

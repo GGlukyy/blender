@@ -105,6 +105,12 @@ struct SelectMap {
    * bone is its own pick target (otherwise every bone of an armature is the same box and a
    * click always picks the first one). Set by the overlay armature code. */
   std::optional<std::pair<float3, float3>> bone_bounds_override;
+  /** World head/tail of the bone being drawn. Bones are picked by their projected line segment
+   * (a box of a bone overlaps its neighbours in dense rigs). */
+  std::optional<std::pair<float3, float3>> bone_segment_override;
+  /** Per internal id: pick segment (head, tail) in world space, only valid when `has_seg_map`. */
+  Vector<std::pair<float3, float3>> seg_map;
+  Vector<bool> has_seg_map;
 #endif
 #ifndef NDEBUG
   /** Debug map containing a copy of the object name. */
@@ -135,6 +141,9 @@ struct SelectMap {
       sub_object_id = 0;
     }
 
+#ifdef __EMSCRIPTEN__
+    const uint raw_sub_object_id = sub_object_id;
+#endif
     uint object_id = ob_ref.object->runtime->select_id;
     uint id = select_id_map.append_and_get_index(object_id | sub_object_id);
     in_front_map.append(ob_ref.object->dtx & OB_DRAW_IN_FRONT);
@@ -158,6 +167,22 @@ struct SelectMap {
         p = math::transform_point(m, p);
         wmin = math::min(wmin, p);
         wmax = math::max(wmax, p);
+      }
+      if (bone_segment_override) {
+        /* BONESEL_ROOT / BONESEL_TIP (edit-mode joints) = a point, otherwise the whole bone. */
+        std::pair<float3, float3> seg = *bone_segment_override;
+        if (raw_sub_object_id & (1u << 29)) {
+          seg.second = seg.first;
+        }
+        else if (raw_sub_object_id & (1u << 30)) {
+          seg.first = seg.second;
+        }
+        seg_map.append(seg);
+        has_seg_map.append(true);
+      }
+      else {
+        seg_map.append({float3(0), float3(0)});
+        has_seg_map.append(false);
       }
       if (bone_bounds_override) {
         bounds_map.append(*bone_bounds_override);
@@ -204,6 +229,8 @@ struct SelectMap {
     in_front_map.clear();
 #ifdef __EMSCRIPTEN__
     bounds_map.clear();
+    seg_map.clear();
+    has_seg_map.clear();
 #endif
 #ifndef NDEBUG
     map_names.clear();
@@ -346,6 +373,38 @@ struct SelectMap {
     const float3 p1 = math::project_point(pv_inv, float3(0.0f, 0.0f, 1.0f));
     const float3 dir = math::normalize(p1 - p0);
     for (const int i : bounds_map.index_range()) {
+      if (has_seg_map[i]) {
+        /* Bone: distance of the pick center (NDC 0,0; the pick rect spans [-1,1]²) to the
+         * projected head-tail segment. Closest to the click wins. */
+        const float4 ha = pv * float4(seg_map[i].first, 1.0f);
+        const float4 hb = pv * float4(seg_map[i].second, 1.0f);
+        if (ha.w <= 1e-8f || hb.w <= 1e-8f) {
+          continue;
+        }
+        const float2 a = float2(ha.x, ha.y) / ha.w;
+        const float2 b = float2(hb.x, hb.y) / hb.w;
+        const float2 ab = b - a;
+        const float len2 = math::dot(ab, ab);
+        const float t = len2 > 1e-12f ? math::clamp(-math::dot(a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+        const float dist = math::length(a + ab * t);
+        if (dist > 1.0f) {
+          continue;
+        }
+        const float3 hit = math::interpolate(seg_map[i].first, seg_map[i].second, t);
+        const float z01 = math::clamp(math::project_point(pv, hit).z * 0.5f + 0.5f, 0.0f, 1.0f);
+        if (info_buf.mode == SelectType::SELECT_PICK_ALL) {
+          uint32_t bits;
+          const float zf = z01;
+          memcpy(&bits, &zf, sizeof(bits));
+          select_output_buf[i] = bits;
+        }
+        else {
+          /* Distance to the click is the primary key for bones (depth is useless for a line
+           * drawn on top of its neighbours). */
+          select_output_buf[i] = (uint32_t(dist * float(0x00FFFFFFu)) << 8u) | 0u;
+        }
+        continue;
+      }
       const float3 &bmin = bounds_map[i].first;
       const float3 &bmax = bounds_map[i].second;
       float tmin = 0.0f;
