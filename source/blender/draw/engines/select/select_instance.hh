@@ -372,7 +372,21 @@ struct SelectMap {
     const float3 p0 = math::project_point(pv_inv, float3(0.0f, 0.0f, -1.0f));
     const float3 p1 = math::project_point(pv_inv, float3(0.0f, 0.0f, 1.0f));
     const float3 dir = math::normalize(p1 - p0);
+    /* Objects whose bones are individually selectable (edit/pose mode): their object-level AABB
+     * entry must not take part, it is nearer than the bone hits and Blender then picks no bone. */
+    constexpr uint kBoneSelAny = (1u << 29) | (1u << 30) | (1u << 31); /* BONESEL_ANY (ED_armature.hh) */
+    Vector<uint> bone_pick_objects;
     for (const int i : bounds_map.index_range()) {
+      if (has_seg_map[i] && (select_id_map[i] & kBoneSelAny)) {
+        bone_pick_objects.append_non_duplicates(select_id_map[i] & 0xFFFFu);
+      }
+    }
+    for (const int i : bounds_map.index_range()) {
+      if (!has_seg_map[i] && !(select_id_map[i] & kBoneSelAny) &&
+          bone_pick_objects.contains(select_id_map[i] & 0xFFFFu))
+      {
+        continue;
+      }
       if (has_seg_map[i]) {
         /* Bone: distance of the pick center (NDC 0,0; the pick rect spans [-1,1]²) to the
          * projected head-tail segment. Closest to the click wins. */
