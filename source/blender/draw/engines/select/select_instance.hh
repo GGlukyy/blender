@@ -101,6 +101,10 @@ struct SelectMap {
   /** World-space AABB per internal id, for the CPU pick fallback (the WebGPU
    * backend cannot read the GPU result back synchronously — no JSPI). */
   Vector<std::pair<float3, float3>> bounds_map;
+  /** World AABB of the bone being drawn; replaces the whole-object AABB in `select_id` so each
+   * bone is its own pick target (otherwise every bone of an armature is the same box and a
+   * click always picks the first one). Set by the overlay armature code. */
+  std::optional<std::pair<float3, float3>> bone_bounds_override;
 #endif
 #ifndef NDEBUG
   /** Debug map containing a copy of the object name. */
@@ -155,7 +159,12 @@ struct SelectMap {
         wmin = math::min(wmin, p);
         wmax = math::max(wmax, p);
       }
-      bounds_map.append({wmin, wmax});
+      if (bone_bounds_override) {
+        bounds_map.append(*bone_bounds_override);
+      }
+      else {
+        bounds_map.append({wmin, wmax});
+      }
     }
 #endif
 

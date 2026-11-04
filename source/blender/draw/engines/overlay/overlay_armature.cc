@@ -1631,6 +1631,30 @@ static void bone_draw(const eArmature_Drawtype drawtype,
                       const eBone_Flag boneflag,
                       const int select_id)
 {
+#ifdef __EMSCRIPTEN__
+  /* CPU pick fallback needs a per-bone box (see SelectMap::bone_bounds_override). */
+  {
+    const float4x4 world = ctx->ob->object_to_world() * float4x4(bone.disp_mat());
+    float3 bmin(FLT_MAX), bmax(-FLT_MAX);
+    for (int c = 0; c < 8; c++) {
+      const float3 p = math::transform_point(world,
+                                             float3((c & 1) ? 0.15f : -0.15f,
+                                                    (c & 2) ? 1.0f : 0.0f,
+                                                    (c & 4) ? 0.15f : -0.15f));
+      bmin = math::min(bmin, p);
+      bmax = math::max(bmax, p);
+    }
+    ctx->res->bone_bounds_override = std::make_pair(bmin, bmax);
+  }
+  struct BoneBoundsReset {
+    const Armatures::DrawContext *ctx;
+    ~BoneBoundsReset()
+    {
+      ctx->res->bone_bounds_override.reset();
+    }
+  } bone_bounds_reset{ctx};
+#endif
+
   if (use_custom_shape) {
     bone_draw_custom_shape(ctx, bone, boneflag, select_id);
     return;
