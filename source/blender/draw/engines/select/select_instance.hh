@@ -111,6 +111,17 @@ struct SelectMap {
   /** Per internal id: pick segment (head, tail) in world space, only valid when `has_seg_map`. */
   Vector<std::pair<float3, float3>> seg_map;
   Vector<bool> has_seg_map;
+  /** World-space shape of the bone being drawn (custom shape, B-Bone), picked instead of its
+   * head-tail segment: what you see is what you click. Consumed by the next `select_id`. */
+  bool has_bone_shape_override = false;
+  Vector<float3> bone_shape_edges_override; /* Pairs. */
+  Vector<float3> bone_shape_tris_override;  /* Triples. */
+  /** Per internal id: range in the shape pools, only valid when `has_shape_map`. */
+  Vector<bool> has_shape_map;
+  Vector<IndexRange> shape_edge_ranges;
+  Vector<IndexRange> shape_tri_ranges;
+  Vector<float3> shape_edges;
+  Vector<float3> shape_tris;
 #endif
 #ifndef NDEBUG
   /** Debug map containing a copy of the object name. */
@@ -184,6 +195,14 @@ struct SelectMap {
         seg_map.append({float3(0), float3(0)});
         has_seg_map.append(false);
       }
+      has_shape_map.append(has_bone_shape_override);
+      shape_edge_ranges.append(IndexRange(shape_edges.size(), bone_shape_edges_override.size()));
+      shape_tri_ranges.append(IndexRange(shape_tris.size(), bone_shape_tris_override.size()));
+      shape_edges.extend(bone_shape_edges_override);
+      shape_tris.extend(bone_shape_tris_override);
+      has_bone_shape_override = false;
+      bone_shape_edges_override.clear();
+      bone_shape_tris_override.clear();
       if (bone_bounds_override) {
         bounds_map.append(*bone_bounds_override);
       }
@@ -231,6 +250,14 @@ struct SelectMap {
     bounds_map.clear();
     seg_map.clear();
     has_seg_map.clear();
+    has_bone_shape_override = false;
+    bone_shape_edges_override.clear();
+    bone_shape_tris_override.clear();
+    has_shape_map.clear();
+    shape_edge_ranges.clear();
+    shape_tri_ranges.clear();
+    shape_edges.clear();
+    shape_tris.clear();
 #endif
 #ifndef NDEBUG
     map_names.clear();
@@ -346,6 +373,23 @@ struct SelectMap {
       }
     }
 
+    /* Does the world triangle cover the pick center (NDC 0,0)? */
+    const auto tri_covers_center = [&](const float3 &wa, const float3 &wb, const float3 &wc) {
+      const float4 ha = pv * float4(wa, 1.0f);
+      const float4 hb = pv * float4(wb, 1.0f);
+      const float4 hc = pv * float4(wc, 1.0f);
+      if (ha.w <= 1e-8f || hb.w <= 1e-8f || hc.w <= 1e-8f) {
+        return false;
+      }
+      const float2 a = float2(ha.x, ha.y) / ha.w;
+      const float2 b = float2(hb.x, hb.y) / hb.w;
+      const float2 c = float2(hc.x, hc.y) / hc.w;
+      const float d0 = a.x * b.y - a.y * b.x;
+      const float d1 = b.x * c.y - b.y * c.x;
+      const float d2 = c.x * a.y - c.y * a.x;
+      return (d0 >= 0.0f && d1 >= 0.0f && d2 >= 0.0f) || (d0 <= 0.0f && d1 <= 0.0f && d2 <= 0.0f);
+    };
+
     if (info_buf.mode == SelectType::SELECT_ALL) {
       /* Box/lasso "select everything in rect": the pick winmat maps the rect to
        * the full NDC cube, so an object is inside iff its projected AABB
@@ -356,10 +400,10 @@ struct SelectMap {
         {
           continue; /* object-level entry decodes as bone 0 */
         }
-        if (has_seg_map[i]) {
-          /* Bone: its projected head-tail segment must touch the rect (Liang-Barsky on [-1,1]²). */
-          const float4 ha = pv * float4(seg_map[i].first, 1.0f);
-          const float4 hb = pv * float4(seg_map[i].second, 1.0f);
+        /* Bone: its projected segment must touch the rect (Liang-Barsky on [-1,1]²). */
+        const auto seg_touches_rect = [&](const float3 &wa, const float3 &wb) {
+          const float4 ha = pv * float4(wa, 1.0f);
+          const float4 hb = pv * float4(wb, 1.0f);
           bool hit = false;
           if (ha.w > 1e-8f && hb.w > 1e-8f) {
             const float2 a = float2(ha.x, ha.y) / ha.w;
@@ -383,6 +427,24 @@ struct SelectMap {
                 hit = t0 <= t1;
               }
             }
+          }
+          return hit;
+        };
+        if (has_seg_map[i]) {
+          bool hit = false;
+          if (has_shape_map[i]) {
+            const IndexRange edges = shape_edge_ranges[i];
+            for (int e = 0; e + 1 < edges.size() && !hit; e += 2) {
+              hit = seg_touches_rect(shape_edges[edges[e]], shape_edges[edges[e + 1]]);
+            }
+            const IndexRange tris = shape_tri_ranges[i];
+            for (int t = 0; t + 2 < tris.size() && !hit; t += 3) {
+              hit = tri_covers_center(
+                  shape_tris[tris[t]], shape_tris[tris[t + 1]], shape_tris[tris[t + 2]]);
+            }
+          }
+          else {
+            hit = seg_touches_rect(seg_map[i].first, seg_map[i].second);
           }
           if (hit) {
             select_output_buf[i / 32] |= 1u << (i % 32);
@@ -428,22 +490,49 @@ struct SelectMap {
       }
       if (has_seg_map[i]) {
         /* Bone: distance of the pick center (NDC 0,0; the pick rect spans [-1,1]²) to the
-         * projected head-tail segment. Closest to the click wins. */
-        const float4 ha = pv * float4(seg_map[i].first, 1.0f);
-        const float4 hb = pv * float4(seg_map[i].second, 1.0f);
-        if (ha.w <= 1e-8f || hb.w <= 1e-8f) {
-          continue;
+         * projected segments. Closest to the click wins. */
+        float dist = FLT_MAX;
+        float3 hit(0.0f);
+        const auto test_seg = [&](const float3 &wa, const float3 &wb) {
+          const float4 ha = pv * float4(wa, 1.0f);
+          const float4 hb = pv * float4(wb, 1.0f);
+          if (ha.w <= 1e-8f || hb.w <= 1e-8f) {
+            return;
+          }
+          const float2 a = float2(ha.x, ha.y) / ha.w;
+          const float2 b = float2(hb.x, hb.y) / hb.w;
+          const float2 ab = b - a;
+          const float len2 = math::dot(ab, ab);
+          const float t = len2 > 1e-12f ? math::clamp(-math::dot(a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+          const float d = math::length(a + ab * t);
+          if (d < dist) {
+            dist = d;
+            hit = math::interpolate(wa, wb, t);
+          }
+        };
+        if (has_shape_map[i]) {
+          const IndexRange edges = shape_edge_ranges[i];
+          for (int e = 0; e + 1 < edges.size(); e += 2) {
+            test_seg(shape_edges[edges[e]], shape_edges[edges[e + 1]]);
+          }
+          const IndexRange tris = shape_tri_ranges[i];
+          for (int t = 0; t + 2 < tris.size(); t += 3) {
+            const float3 &wa = shape_tris[tris[t]];
+            const float3 &wb = shape_tris[tris[t + 1]];
+            const float3 &wc = shape_tris[tris[t + 2]];
+            if (tri_covers_center(wa, wb, wc)) {
+              dist = 0.0f;
+              hit = (wa + wb + wc) / 3.0f;
+              break;
+            }
+          }
         }
-        const float2 a = float2(ha.x, ha.y) / ha.w;
-        const float2 b = float2(hb.x, hb.y) / hb.w;
-        const float2 ab = b - a;
-        const float len2 = math::dot(ab, ab);
-        const float t = len2 > 1e-12f ? math::clamp(-math::dot(a, ab) / len2, 0.0f, 1.0f) : 0.0f;
-        const float dist = math::length(a + ab * t);
+        else {
+          test_seg(seg_map[i].first, seg_map[i].second);
+        }
         if (dist > 1.0f) {
           continue;
         }
-        const float3 hit = math::interpolate(seg_map[i].first, seg_map[i].second, t);
         const float z01 = math::clamp(math::project_point(pv, hit).z * 0.5f + 0.5f, 0.0f, 1.0f);
         if (info_buf.mode == SelectType::SELECT_PICK_ALL) {
           uint32_t bits;
