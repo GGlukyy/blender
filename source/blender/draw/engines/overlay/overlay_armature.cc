@@ -1422,6 +1422,25 @@ static void bone_draw_octa(const Armatures::DrawContext *ctx,
   const float *col_wire = get_bone_wire_color(ctx, boneflag);
   const float *col_hint = get_bone_hint_color(ctx, boneflag);
 
+#ifdef __EMSCRIPTEN__
+  /* CPU pick fallback: the filled body is clickable, not just the axis. */
+  if (ctx->is_filled && ctx->res->selection_type != draw::select::SelectionType::DISABLED) {
+    const float4x4 m = ctx->ob->object_to_world() * float4x4(bone.disp_mat());
+    const float3 root = math::transform_point(m, float3(0.0f));
+    const float3 tip = math::transform_point(m, float3(0.0f, 1.0f, 0.0f));
+    const float3 ring[4] = {math::transform_point(m, float3(0.1f, 0.1f, 0.1f)),
+                            math::transform_point(m, float3(0.1f, 0.1f, -0.1f)),
+                            math::transform_point(m, float3(-0.1f, 0.1f, -0.1f)),
+                            math::transform_point(m, float3(-0.1f, 0.1f, 0.1f))};
+    ctx->res->bone_shape_edges_override.extend({root, tip});
+    for (const int i : IndexRange(4)) {
+      ctx->res->bone_shape_tris_override.extend({root, ring[i], ring[(i + 1) % 4]});
+      ctx->res->bone_shape_tris_override.extend({tip, ring[i], ring[(i + 1) % 4]});
+    }
+    ctx->res->has_bone_shape_override = true;
+  }
+#endif
+
   auto sel_id = ctx->res->select_id(*ctx->ob_ref, select_id | BONESEL_BONE);
   float4x4 bone_mat = ctx->ob->object_to_world() * float4x4(bone.disp_mat());
 

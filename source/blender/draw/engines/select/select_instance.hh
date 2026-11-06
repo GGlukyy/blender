@@ -521,8 +521,12 @@ struct SelectMap {
             const float3 &wb = shape_tris[tris[t + 1]];
             const float3 &wc = shape_tris[tris[t + 2]];
             if (tri_covers_center(wa, wb, wc)) {
-              dist = 0.0f;
-              hit = (wa + wb + wc) / 3.0f;
+              /* Inside the drawn surface. Keeps the edge distance as rank: bodies of neighbouring
+               * bones overlap, the one whose axis is closest wins. */
+              if (dist > 1.0f) {
+                hit = (wa + wb + wc) / 3.0f;
+              }
+              dist = math::min(dist, 1.0f) * 0.5f;
               break;
             }
           }
