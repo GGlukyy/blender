@@ -569,6 +569,11 @@ def _remote_asset_library_restore_backups() -> None:
     if not bpy.context.preferences.experimental.use_remote_asset_libraries:
         return
 
+    import sys
+    if sys.platform == "emscripten":
+        # Web: the downloader needs `_multiprocessing`; importing it fails and `register()` aborts.
+        return
+
     from _bpy_internal.assets.remote_library import listing_downloader
 
     for asset_lib in bpy.context.preferences.filepaths.asset_libraries:
