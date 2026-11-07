@@ -294,11 +294,34 @@ namespace blender::gpu {
 /* All live contexts, for cross-context scrubbing of freed texture wrappers. */
 std::vector<WebGPUContext *> g_all_contexts;
 
+/* B3: groups dropped when their texture died, and MB of destroyed textures they pinned. */
+static long long g_stat_bg_purged = 0, g_stat_pin_bytes = 0;
+long long wgpu_stat_bg_purged()
+{
+  return g_stat_bg_purged;
+}
+long long wgpu_stat_pin_mb()
+{
+  return g_stat_pin_bytes / (1024 * 1024);
+}
+
 void WebGPUContext::scrub_texture_all_contexts(WebGPUTexture *tex)
 {
   wgpu_depth_snapshot_forget(tex);
+  /* WGPU_BG_PURGE=0 (?bgpurge=0) only counts, for A/B on the iPad. */
+  static const char *purge_env = getenv("WGPU_BG_PURGE");
+  static const bool purge = !(purge_env && purge_env[0] == '0');
+  const std::vector<WGPUTextureView> views = tex->views_collect();
+  int hits = 0;
   for (WebGPUContext *ctx : g_all_contexts) {
     ctx->scrub_texture(tex);
+    if (!views.empty()) {
+      hits += ctx->bind_groups_drop_views(views.data(), int(views.size()), purge);
+    }
+  }
+  g_stat_bg_purged += hits;
+  if (hits > 0) {
+    g_stat_pin_bytes += tex->alloc_bytes();
   }
 }
 
@@ -1731,7 +1754,7 @@ void WebGPUContext::present_backbuffer(int w, int h)
     if (s_frame <= 8 || (s_frame % (g_perf_enabled ? 20 : 60)) == 0 || frame_ms > 25.0) {
       fprintf(stderr,
               "WGPU_STATS frame=%d dt=%.1fms submits=%d passes=%d bindgroups=%d bg_hits=%d "
-              "guard_flushes=%d fb_switches=%d tex=%d/%lldMB writes=%lld/%lldKB big=%lld\n",
+              "guard_flushes=%d fb_switches=%d tex=%d/%lldMB writes=%lld/%lldKB big=%lld bg_purged=%lld pin_mb=%lld\n",
               s_frame,
               frame_ms,
               g_stat_submits,
@@ -1744,7 +1767,9 @@ void WebGPUContext::present_backbuffer(int w, int h)
               [] { extern long long g_stat_tex_bytes; return g_stat_tex_bytes / (1024 * 1024); }(),
               g_stat_writes,
               g_stat_write_bytes / 1024,
-              g_stat_write_big);
+              g_stat_write_big,
+              wgpu_stat_bg_purged(),
+              wgpu_stat_pin_mb());
       extern void webgpu_stat_flush_dump();
       webgpu_stat_flush_dump();
     }
