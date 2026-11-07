@@ -580,8 +580,21 @@ int main(int argc,
           }
           if (typeof GPUBuffer !== "undefined") gdestroy("buf", GPUBuffer.prototype);
           if (typeof GPUTexture !== "undefined") gdestroy("tex", GPUTexture.prototype);
+          /* B3d: lost reason "destroyed" means someone called device.destroy() (our code, e.g.
+           * emwgpuDeviceDestroy on the last wgpuDeviceRelease) or WebKit did it itself. Keep the
+           * caller's stack so the telemetry tells the two apart. */
+          let gdstack = "";
+          if (typeof GPUDevice !== "undefined") {
+            const gdd = GPUDevice.prototype.destroy;
+            GPUDevice.prototype.destroy = function () {
+              gdstack = String(new Error().stack).slice(0, 1500);
+              console.log("WEBGPU_DEVICE_DESTROY " + gdstack.split(String.fromCharCode(10)).join(" | "));
+              return gdd.apply(this, arguments);
+            };
+          }
           gdev.lost.then(
-              (i) => { gpost(true, {lost_reason: i.reason, lost_message: String(i.message).slice(0, 300)});
+              (i) => { gpost(true, {lost_reason: i.reason, lost_message: String(i.message).slice(0, 300),
+                                    destroy_called: gdstack ? 1 : 0, destroy_stack: gdstack});
                        console.log("WEBGPU_LOST " + i.reason + " " + i.message); _blender_web_device_lost(); });
           _blender_web_device_ready();
         }
