@@ -16,6 +16,7 @@
 #include "gpu_texture_private.hh"
 
 #include <map>
+#include <vector>
 
 #include <webgpu/webgpu.h>
 
@@ -47,6 +48,27 @@ class WebGPUTexture : public Texture {
   long long alloc_bytes_ = 0;
 
  public:
+  /* All views owned by this texture (for WebGPUContext::scrub_texture_all_contexts). */
+  std::vector<WGPUTextureView> views_collect() const
+  {
+    std::vector<WGPUTextureView> v;
+    for (WGPUTextureView o : {view_, sample_view_, mip_range_view_, storage_view_}) {
+      if (o) {
+        v.push_back(o);
+      }
+    }
+    for (const auto &kv : attachment_views_) {
+      if (kv.second) {
+        v.push_back(kv.second);
+      }
+    }
+    return v;
+  }
+  long long alloc_bytes() const
+  {
+    return alloc_bytes_;
+  }
+
   WebGPUTexture(const char *name);
   ~WebGPUTexture() override;
 

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -605,6 +606,33 @@ class WebGPUContext : public Context {
         bound_image_[i] = nullptr;
       }
     }
+  }
+  /* B3: a cached group pins the views of a texture that is being destroyed, and WebKit keeps the
+   * memory of a destroyed texture while a bind group references it (5 GB kill on iPad). Returns the
+   * number of groups that reference `views`; with `remove` they also leave the cache. */
+  int bind_groups_drop_views(const WGPUTextureView *views, int views_num, bool remove)
+  {
+    int hits = 0;
+    for (auto it = bind_group_cache_.begin(); it != bind_group_cache_.end();) {
+      bool hit = false;
+      for (const WGPUBindGroupEntry &e : it->second.entries) {
+        if (e.textureView && std::find(views, views + views_num, e.textureView) != views + views_num) {
+          hit = true;
+          break;
+        }
+      }
+      if (hit) {
+        hits++;
+      }
+      if (hit && remove) {
+        cached_bind_group_release(it->second);
+        it = bind_group_cache_.erase(it);
+      }
+      else {
+        ++it;
+      }
+    }
+    return hits;
   }
   void scrub_buffer(WGPUBuffer buf)
   {
