@@ -11,8 +11,14 @@
 #include "BKE_object_types.hh"
 
 #ifdef __EMSCRIPTEN__
+#  include "BKE_camera.h"
+#  include "BKE_mesh_types.hh"
 #  include "BKE_object.hh"
 #  include "BLI_math_geom_c.hh"
+#  include "DNA_camera_types.h"
+#  include "DNA_mesh_types.h"
+#  include "DNA_view3d_types.h"
+#  include "DRW_render.hh"
 #endif
 
 #include "DRW_gpu_wrapper.hh"
@@ -122,6 +128,12 @@ struct SelectMap {
   Vector<IndexRange> shape_tri_ranges;
   Vector<float3> shape_edges;
   Vector<float3> shape_tris;
+  /** Evaluated mesh of the entry (nullptr: not a mesh) and its world matrix: the CPU pick tests
+   * the triangles, an AABB picks the room instead of the chair standing in it. */
+  Vector<const Mesh *> pick_mesh_map;
+  Vector<float4x4> pick_mat_map;
+  /** Drawn as wire (shading or Display As): faces are not hit, only edges. */
+  Vector<bool> pick_wire_map;
 #endif
 #ifndef NDEBUG
   /** Debug map containing a copy of the object name. */
@@ -195,6 +207,48 @@ struct SelectMap {
         seg_map.append({float3(0), float3(0)});
         has_seg_map.append(false);
       }
+      /* Objects drawn as lines: their shape instead of the AABB (other types keep the AABB). */
+      const Object *ob = ob_ref.object;
+      const Mesh *pick_mesh = nullptr;
+      if (ELEM(ob->type, OB_MESH, OB_CURVES_LEGACY, OB_SURF, OB_FONT)) {
+        pick_mesh = BKE_object_get_evaluated_mesh(ob);
+        /* Edit-mode wrapper has no vertex array. */
+        if (pick_mesh && (pick_mesh->runtime->wrapper_type == ME_WRAPPER_TYPE_BMESH || pick_mesh->faces_num == 0)) {
+          pick_mesh = nullptr;
+        }
+      }
+      pick_mesh_map.append(pick_mesh);
+      pick_mat_map.append(m);
+      const View3D *pick_v3d = DRW_context_get()->v3d;
+      pick_wire_map.append((pick_v3d && pick_v3d->shading.type == OB_WIRE) || ob->dt <= OB_WIRE);
+      if (!bone_segment_override && !has_bone_shape_override) {
+        const auto add_edge = [&](const float3 &a, const float3 &b) {
+          bone_shape_edges_override.append(math::transform_point(m, a));
+          bone_shape_edges_override.append(math::transform_point(m, b));
+        };
+        if (ob->type == OB_CAMERA) {
+          float frame[4][3], asp[2], shift[2], drawsize;
+          const float scale[3] = {1.0f, 1.0f, 1.0f};
+          const Camera *cam = reinterpret_cast<const Camera *>(ob->data);
+          BKE_camera_view_frame_ex(nullptr, cam, cam->drawsize, false, scale, asp, shift, &drawsize, frame);
+          for (int c = 0; c < 4; c++) {
+            add_edge(float3(0.0f), float3(frame[c]));
+            add_edge(float3(frame[c]), float3(frame[(c + 1) % 4]));
+          }
+          has_bone_shape_override = true;
+        }
+        else if (ELEM(ob->type, OB_LAMP)) {
+          add_edge(float3(0.0f), float3(0.0f));
+          has_bone_shape_override = true;
+        }
+        else if (ob->type == OB_EMPTY && ELEM(ob->empty_drawtype, OB_PLAINAXES, OB_ARROWS)) {
+          const float d = ob->empty_drawsize;
+          add_edge(float3(-d, 0.0f, 0.0f), float3(d, 0.0f, 0.0f));
+          add_edge(float3(0.0f, -d, 0.0f), float3(0.0f, d, 0.0f));
+          add_edge(float3(0.0f, 0.0f, -d), float3(0.0f, 0.0f, d));
+          has_bone_shape_override = true;
+        }
+      }
       has_shape_map.append(has_bone_shape_override);
       shape_edge_ranges.append(IndexRange(shape_edges.size(), bone_shape_edges_override.size()));
       shape_tri_ranges.append(IndexRange(shape_tris.size(), bone_shape_tris_override.size()));
@@ -258,6 +312,9 @@ struct SelectMap {
     shape_tri_ranges.clear();
     shape_edges.clear();
     shape_tris.clear();
+    pick_mesh_map.clear();
+    pick_mat_map.clear();
+    pick_wire_map.clear();
 #endif
 #ifndef NDEBUG
     map_names.clear();
@@ -390,6 +447,88 @@ struct SelectMap {
       return (d0 >= 0.0f && d1 >= 0.0f && d2 >= 0.0f) || (d0 <= 0.0f && d1 <= 0.0f && d2 <= 0.0f);
     };
 
+    /* Projected segment touches the rect (Liang-Barsky on [-1,1]²). */
+    const auto seg_touches_rect = [&](const float3 &wa, const float3 &wb) {
+      const float4 ha = pv * float4(wa, 1.0f);
+      const float4 hb = pv * float4(wb, 1.0f);
+      bool hit = false;
+      if (ha.w > 1e-8f && hb.w > 1e-8f) {
+        const float2 a = float2(ha.x, ha.y) / ha.w;
+        const float2 d = float2(hb.x, hb.y) / hb.w - a;
+        float t0 = 0.0f, t1 = 1.0f;
+        hit = true;
+        for (int k = 0; k < 4 && hit; k++) {
+          const float p = (k & 1) ? d[k >> 1] : -d[k >> 1];
+          const float q = (k & 1) ? 1.0f - a[k >> 1] : a[k >> 1] + 1.0f;
+          if (std::abs(p) < 1e-12f) {
+            hit = q >= 0.0f;
+          }
+          else {
+            const float r = q / p;
+            if (p < 0.0f) {
+              t0 = math::max(t0, r);
+            }
+            else {
+              t1 = math::min(t1, r);
+            }
+            hit = t0 <= t1;
+          }
+        }
+      }
+      return hit;
+    };
+
+    /* Ray through the rect center (the pick winmat centers the cursor at NDC (0,0)). */
+    const float3 p0 = math::project_point(pv_inv, float3(0.0f, 0.0f, -1.0f));
+    const float3 p1 = math::project_point(pv_inv, float3(0.0f, 0.0f, 1.0f));
+    const float3 dir = math::normalize(p1 - p0);
+
+    /* Do the triangles of the mesh cover the rect center, or an edge touch the rect?
+     * r_hit: the point nearest to the view. */
+    const auto mesh_hit = [&](const int i, float3 &r_hit) {
+      const Mesh &mesh = *pick_mesh_map[i];
+      const float4x4 &mat = pick_mat_map[i];
+      const float4x4 mat_inv = math::invert(mat);
+      const float3 p0_l = math::transform_point(mat_inv, p0);
+      const float3 dir_l = math::transform_direction(mat_inv, dir);
+      const Span<float3> positions = mesh.vert_positions();
+      const Span<int> corner_verts = mesh.corner_verts();
+      float best = FLT_MAX;
+      for (const int3 &tri : pick_wire_map[i] ? Span<int3>() : mesh.corner_tris()) {
+        float lambda;
+        if (isect_ray_tri_v3(p0_l,
+                             dir_l,
+                             positions[corner_verts[tri[0]]],
+                             positions[corner_verts[tri[1]]],
+                             positions[corner_verts[tri[2]]],
+                             &lambda,
+                             nullptr) &&
+            lambda >= 0.0f && lambda < best)
+        {
+          best = lambda;
+        }
+      }
+      if (best != FLT_MAX) {
+        r_hit = math::transform_point(mat, p0_l + dir_l * best);
+        return true;
+      }
+      float best_z = FLT_MAX;
+      for (const int2 &edge : mesh.edges()) {
+        const float3 a = math::transform_point(mat, positions[edge[0]]);
+        const float3 b = math::transform_point(mat, positions[edge[1]]);
+        if (seg_touches_rect(a, b)) {
+          for (const float3 &co : {a, b}) {
+            const float z = math::project_point(pv, co).z;
+            if (z < best_z) {
+              best_z = z;
+              r_hit = co;
+            }
+          }
+        }
+      }
+      return best_z != FLT_MAX;
+    };
+
     if (info_buf.mode == SelectType::SELECT_ALL) {
       /* Box/lasso "select everything in rect": the pick winmat maps the rect to
        * the full NDC cube, so an object is inside iff its projected AABB
@@ -400,36 +539,6 @@ struct SelectMap {
         {
           continue; /* object-level entry decodes as bone 0 */
         }
-        /* Bone: its projected segment must touch the rect (Liang-Barsky on [-1,1]²). */
-        const auto seg_touches_rect = [&](const float3 &wa, const float3 &wb) {
-          const float4 ha = pv * float4(wa, 1.0f);
-          const float4 hb = pv * float4(wb, 1.0f);
-          bool hit = false;
-          if (ha.w > 1e-8f && hb.w > 1e-8f) {
-            const float2 a = float2(ha.x, ha.y) / ha.w;
-            const float2 d = float2(hb.x, hb.y) / hb.w - a;
-            float t0 = 0.0f, t1 = 1.0f;
-            hit = true;
-            for (int k = 0; k < 4 && hit; k++) {
-              const float p = (k & 1) ? d[k >> 1] : -d[k >> 1];
-              const float q = (k & 1) ? 1.0f - a[k >> 1] : a[k >> 1] + 1.0f;
-              if (std::abs(p) < 1e-12f) {
-                hit = q >= 0.0f;
-              }
-              else {
-                const float r = q / p;
-                if (p < 0.0f) {
-                  t0 = math::max(t0, r);
-                }
-                else {
-                  t1 = math::min(t1, r);
-                }
-                hit = t0 <= t1;
-              }
-            }
-          }
-          return hit;
-        };
         if (has_seg_map[i]) {
           bool hit = false;
           if (has_shape_map[i]) {
@@ -447,6 +556,23 @@ struct SelectMap {
             hit = seg_touches_rect(seg_map[i].first, seg_map[i].second);
           }
           if (hit) {
+            select_output_buf[i / 32] |= 1u << (i % 32);
+          }
+          continue;
+        }
+        if (has_shape_map[i]) {
+          const IndexRange edges = shape_edge_ranges[i];
+          for (int e = 0; e + 1 < edges.size(); e += 2) {
+            if (seg_touches_rect(shape_edges[edges[e]], shape_edges[edges[e + 1]])) {
+              select_output_buf[i / 32] |= 1u << (i % 32);
+              break;
+            }
+          }
+          continue;
+        }
+        if (pick_mesh_map[i]) {
+          float3 hit;
+          if (mesh_hit(i, hit)) {
             select_output_buf[i / 32] |= 1u << (i % 32);
           }
           continue;
@@ -477,11 +603,6 @@ struct SelectMap {
       return;
     }
 
-    /* Pick modes: ray through the rect center (the pick winmat centers the
-     * cursor at NDC (0,0)). */
-    const float3 p0 = math::project_point(pv_inv, float3(0.0f, 0.0f, -1.0f));
-    const float3 p1 = math::project_point(pv_inv, float3(0.0f, 0.0f, 1.0f));
-    const float3 dir = math::normalize(p1 - p0);
     for (const int i : bounds_map.index_range()) {
       if (!has_seg_map[i] && !(select_id_map[i] & kBoneSelAny) &&
           bone_pick_objects.contains(select_id_map[i] & 0xFFFFu))
@@ -551,13 +672,32 @@ struct SelectMap {
         }
         continue;
       }
-      const float3 &bmin = bounds_map[i].first;
-      const float3 &bmax = bounds_map[i].second;
-      float tmin = 0.0f;
-      if (!isect_ray_aabb_v3_simple(p0, dir, bmin, bmax, &tmin, nullptr)) {
-        continue;
+      float3 hit;
+      if (has_shape_map[i]) {
+        const IndexRange edges = shape_edge_ranges[i];
+        bool any = false;
+        for (int e = 0; e + 1 < edges.size() && !any; e += 2) {
+          any = seg_touches_rect(shape_edges[edges[e]], shape_edges[edges[e + 1]]);
+          hit = shape_edges[edges[e]];
+        }
+        if (!any) {
+          continue;
+        }
       }
-      const float3 hit = p0 + dir * math::max(tmin, 0.0f);
+      else if (pick_mesh_map[i]) {
+        if (!mesh_hit(i, hit)) {
+          continue;
+        }
+      }
+      else {
+        const float3 &bmin = bounds_map[i].first;
+        const float3 &bmax = bounds_map[i].second;
+        float tmin = 0.0f;
+        if (!isect_ray_aabb_v3_simple(p0, dir, bmin, bmax, &tmin, nullptr)) {
+          continue;
+        }
+        hit = p0 + dir * math::max(tmin, 0.0f);
+      }
       const float z01 = math::clamp(
           math::project_point(pv, hit).z * 0.5f + 0.5f, 0.0f, 1.0f);
       /* Match the shader encodings (select_lib.glsl). */
