@@ -475,6 +475,7 @@ int main(int argc,
             if (!force && n - glast < 1000) return;
             glast = n;
             gst.buf_mb = Math.round(gbytes.buf / 1048576); gst.tex_mb = Math.round(gbytes.tex / 1048576);
+            gst.tlive = {}; for (const k in gtl) if (gtl[k] >= 1048576) gst.tlive[k] = Math.round(gtl[k] / 1048576);
             gst.q_depth = gst.submits - gst.completed; if (gst.q_depth > gst.q_depth_max) gst.q_depth_max = gst.q_depth;
             gst.write_mb = Math.round(gwbytes / 1048576); gst.map_mb = Math.round(gmbytes / 1048576);
             if (gwlast) gst.write_mb_s = +((gwbytes - gwprev) / 1048576 / ((n - gwlast) / 1000)).toFixed(2);
@@ -483,9 +484,12 @@ int main(int argc,
             try { if (typeof WebGPU !== "undefined") gst.wgpu_live = Object.keys(WebGPU.Internals.jsObjects).length; } catch (e) {}
             gmem.postMessage(Object.assign({}, gst, extra || {}));
           };
+          /* B3j: live texture MB per label/format/size ("tlive", only >= 1 MB groups are posted). */
+          const gtl = {};
+          const gtlive_sub = (r) => { if (r.tk) { gtl[r.tk] -= r.size; if (gtl[r.tk] <= 0) delete gtl[r.tk]; } };
           const grecs = new WeakMap();
           const greg = new FinalizationRegistry((r) => {
-            if (!r.dead) { r.dead = true; gst[r.k]--; gbytes[r.k] -= r.size; gst[r.k + "_gc"]++; }
+            if (!r.dead) { r.dead = true; gst[r.k]--; gbytes[r.k] -= r.size; gst[r.k + "_gc"]++; gtlive_sub(r); }
           });
           const gtrack = (k, obj, size) => {
             const r = {k, size, dead: false};
@@ -498,7 +502,7 @@ int main(int argc,
             const orig = proto.destroy;
             proto.destroy = function () {
               const r = grecs.get(this);
-              if (r && !r.dead) { r.dead = true; gst[k]--; gbytes[k] -= r.size; gst[k + "_destroyed"]++; }
+              if (r && !r.dead) { r.dead = true; gst[k]--; gbytes[k] -= r.size; gst[k + "_destroyed"]++; gtlive_sub(r); }
               gpost(false);
               return orig.apply(this, arguments);
             };
@@ -516,7 +520,13 @@ int main(int argc,
                   l = (sz.depthOrArrayLayers !== undefined ? sz.depthOrArrayLayers : sz[2]) || 1;
             const tk = (d.label || "") + "/" + d.format + "/" + w + "x" + h;
             gst.thist[tk] = (gst.thist[tk] || 0) + 1;
-            return gtrack("tex", gct(d), w * h * l * 4 * (d.mipLevelCount > 1 ? 1.34 : 1));
+            /* B3j: real bytes per texel (was 4 for every format: rgba16float / depth32float-stencil8 counted half). */
+            const f = d.format, bpp = /^rgba32/.test(f) ? 16 : /^(rgba16|rg32|depth32float-stencil8)/.test(f) ? 8 :
+                  /^(rg8|r16|depth16)/.test(f) ? 2 : /^(r8|stencil8)/.test(f) ? 1 : 4;
+            const size = w * h * l * bpp * (d.sampleCount || 1) * (d.mipLevelCount > 1 ? 1.34 : 1);
+            const t = gtrack("tex", gct(d), size);
+            grecs.get(t).tk = tk; gtl[tk] = (gtl[tk] || 0) + size;
+            return t;
           };
           /* IPAD_CRASH H1-0: bind group / view creation counters and GPU queue lag (every 2 s). */
           const gcbg = gdev.createBindGroup.bind(gdev);
