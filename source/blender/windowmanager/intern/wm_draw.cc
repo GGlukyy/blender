@@ -1668,6 +1668,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE const int *blender_web_viewport_rects()
 {
   return g_web_viewport_rects;
 }
+/* Floating regions drawn over a viewport (Adjust Last Operation panel): UI, not viewport, for a
+ * finger. Same layout as above. */
+static int g_web_viewport_holes[1 + 4 * 8] = {0};
+extern "C" EMSCRIPTEN_KEEPALIVE const int *blender_web_viewport_holes()
+{
+  return g_web_viewport_holes;
+}
 
 /* 1 while the cursor (last mouse move) is over a gizmo of a 3D viewport (navigation gizmo/hand/zoom
  * icons, move/rotate/scale handles). demo/src/touch.js uses it to drag the gizmo with a finger
@@ -1685,8 +1692,8 @@ static void wm_web_publish_viewports(wmWindow *win)
     return;
   }
   const int height = WM_window_native_pixel_y(win);
-  int n = 0;
-  int rects[4 * 8];
+  int n = 0, nh = 0;
+  int rects[4 * 8], holes[4 * 8];
   int gizmo_hot = 0;
   ED_screen_areas_iter (win, screen, area) {
     if (area->spacetype != SPACE_VIEW3D) {
@@ -1706,9 +1713,21 @@ static void wm_web_publish_viewports(wmWindow *win)
       for (const ARegion &other : area->regionbase) {
         const int align = RGN_ALIGN_ENUM_FROM_MASK(other.alignment);
         if (&other == &region || !other.overlap || !other.runtime->visible ||
-            !ELEM(align, RGN_ALIGN_LEFT, RGN_ALIGN_RIGHT) ||
             !BLI_rcti_isect(&r, &other.winrct, nullptr))
         {
+          continue;
+        }
+        if (align == RGN_ALIGN_FLOAT) {
+          if (nh < 8) {
+            holes[4 * nh + 0] = other.winrct.xmin;
+            holes[4 * nh + 1] = height - other.winrct.ymax;
+            holes[4 * nh + 2] = other.winrct.xmax;
+            holes[4 * nh + 3] = height - other.winrct.ymin;
+            nh++;
+          }
+          continue;
+        }
+        if (!ELEM(align, RGN_ALIGN_LEFT, RGN_ALIGN_RIGHT)) {
           continue;
         }
         if (abs(r.xmin - other.winrct.xmin) < 2) {
@@ -1729,6 +1748,10 @@ static void wm_web_publish_viewports(wmWindow *win)
     g_web_viewport_rects[1 + i] = rects[i];
   }
   g_web_viewport_rects[0] = n;
+  for (int i = 0; i < 4 * nh; i++) {
+    g_web_viewport_holes[1 + i] = holes[i];
+  }
+  g_web_viewport_holes[0] = nh;
   g_web_gizmo_hot = gizmo_hot;
 }
 #endif
