@@ -1699,10 +1699,29 @@ static void wm_web_publish_viewports(wmWindow *win)
       if (region.runtime->gizmo_map && wm_gizmomap_highlight_get(region.runtime->gizmo_map)) {
         gizmo_hot = 1;
       }
-      rects[4 * n + 0] = region.winrct.xmin;
-      rects[4 * n + 1] = height - region.winrct.ymax;
-      rects[4 * n + 2] = region.winrct.xmax;
-      rects[4 * n + 3] = height - region.winrct.ymin;
+      /* Leave out the side regions drawn over the viewport (toolbar, N-panel sidebar): with region
+       * overlap the WINDOW region spans under them, and a finger on a sidebar field would orbit
+       * (middle button) instead of dragging the value. Header/footer stay as before. */
+      rcti r = region.winrct;
+      for (const ARegion &other : area->regionbase) {
+        const int align = RGN_ALIGN_ENUM_FROM_MASK(other.alignment);
+        if (&other == &region || !other.overlap || !other.runtime->visible ||
+            !ELEM(align, RGN_ALIGN_LEFT, RGN_ALIGN_RIGHT) ||
+            !BLI_rcti_isect(&r, &other.winrct, nullptr))
+        {
+          continue;
+        }
+        if (abs(r.xmin - other.winrct.xmin) < 2) {
+          r.xmin = other.winrct.xmax;
+        }
+        if (abs(r.xmax - other.winrct.xmax) < 2) {
+          r.xmax = other.winrct.xmin;
+        }
+      }
+      rects[4 * n + 0] = r.xmin;
+      rects[4 * n + 1] = height - r.ymax;
+      rects[4 * n + 2] = r.xmax;
+      rects[4 * n + 3] = height - r.ymin;
       n++;
     }
   }
