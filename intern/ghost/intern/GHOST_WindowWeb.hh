@@ -22,9 +22,13 @@
 extern "C" void blender_webgpu_present(int width, int height);
 extern "C" void blender_webgpu_backbuffer_size(int width, int height);
 
+/** Pointer Lock for Wrap/Hide cursor grab (continuous grab), defined in GHOST_SystemWeb.cc. */
+void ghost_web_set_pointer_lock(bool lock);
+
 class GHOST_WindowWeb : public GHOST_Window {
  private:
   uint32_t width_, height_;
+  bool requested_fullscreen_ = false;
 
  public:
   GHOST_WindowWeb(const char * /*title*/,
@@ -67,8 +71,9 @@ class GHOST_WindowWeb : public GHOST_Window {
   {
     return GHOST_kSuccess;
   }
-  GHOST_TSuccess setWindowCursorGrab(GHOST_TGrabCursorMode /*mode*/) override
+  GHOST_TSuccess setWindowCursorGrab(GHOST_TGrabCursorMode mode) override
   {
+    ghost_web_set_pointer_lock(mode == GHOST_kGrabWrap || mode == GHOST_kGrabHide);
     return GHOST_kSuccess;
   }
   GHOST_TSuccess setWindowCursorShape(GHOST_TStandardCursor /*shape*/) override
@@ -159,13 +164,37 @@ class GHOST_WindowWeb : public GHOST_Window {
     blender_webgpu_backbuffer_size(int(width_), int(height_));
     return GHOST_kSuccess;
   }
-  GHOST_TSuccess setState(GHOST_TWindowState /*state*/) override
+  GHOST_TSuccess setState(GHOST_TWindowState state) override
   {
+    /* Window > Toggle Window Fullscreen: browser fullscreen of the page. Must run on the
+     * main thread; the menu click / key press that ran the operator is still the user
+     * activation the browser requires. A refused request is ignored. Leave only the
+     * fullscreen Blender entered itself: window setup also calls setState(Normal) and must
+     * not drop the fullscreen of the embedding page (itch.io button). */
+    const bool full = state == GHOST_kWindowStateFullScreen;
+    if (!full && !requested_fullscreen_) {
+      return GHOST_kSuccess;
+    }
+    requested_fullscreen_ = full;
+    MAIN_THREAD_EM_ASM(
+        {
+          const d = document;
+          const e = d.documentElement;
+          const on = d.fullscreenElement || d.webkitFullscreenElement;
+          const p = $0 ? (on ? null : (e.requestFullscreen || e.webkitRequestFullscreen).call(e)) :
+                         (on ? (d.exitFullscreen || d.webkitExitFullscreen).call(d) : null);
+          if (p && p.catch) {
+            p.catch(() => {});
+          }
+        },
+        int(full));
     return GHOST_kSuccess;
   }
   GHOST_TWindowState getState() const override
   {
-    return GHOST_kWindowStateMaximized;
+    const int full = MAIN_THREAD_EM_ASM_INT(
+        { return (document.fullscreenElement || document.webkitFullscreenElement) ? 1 : 0; });
+    return full ? GHOST_kWindowStateFullScreen : GHOST_kWindowStateMaximized;
   }
   GHOST_TSuccess invalidate() override
   {

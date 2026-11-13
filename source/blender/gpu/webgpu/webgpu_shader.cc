@@ -58,7 +58,9 @@ static WGPUShaderModule webgpu_module_from_wgsl(const std::string &wgsl)
   desc.nextInChain = &src.chain;
   wgpu_note_compile();
   const double t_mod0 = emscripten_get_now();
+  wgpu_hb_phase(WGPU_PH_SHADER_MODULE);
   WGPUShaderModule mod = wgpuDeviceCreateShaderModule(device, &desc);
+  wgpu_hb_back();
   {
     static const bool log_compile = getenv("WGPU_LOG_COMPILE") != nullptr;
     if (log_compile) {
@@ -1137,6 +1139,47 @@ static void parse_wgsl_bindings(const std::string &wgsl,
   }
 }
 
+/* Safari/WebKit fails to build a pipeline for a fragment entry point whose only
+ * output is a bare `@builtin(frag_depth)` ("color target pixel format(0) for location(115)
+ * is incompatible with shader output data type of 3", H26-D, gpencil_depth_merge).
+ * Give such shaders a dummy `@location(0)` member. The output mask is computed BEFORE
+ * this rewrite, so the pipeline still gets writeMask 0 for that target. */
+static void wrap_bare_frag_depth(std::string &wgsl)
+{
+  const std::string sig = "-> @builtin(frag_depth) f32";
+  const size_t frag = wgsl.find("@fragment");
+  if (frag == std::string::npos) {
+    return;
+  }
+  size_t arrow = wgsl.find(sig, frag);
+  if (arrow == std::string::npos) {
+    return;
+  }
+  const size_t body = wgsl.find('{', arrow);
+  if (body == std::string::npos) {
+    return;
+  }
+  /* Wrap every `return X;` after the entry point's opening brace. */
+  std::string tail = wgsl.substr(body);
+  std::string out;
+  size_t pos = 0, r;
+  while ((r = tail.find("return ", pos)) != std::string::npos) {
+    const size_t semi = tail.find(';', r);
+    if (semi == std::string::npos) {
+      return;
+    }
+    out += tail.substr(pos, r - pos);
+    out += "return FragDepthOnlyOut(vec4<f32>(), " + tail.substr(r + 7, semi - r - 7) + ");";
+    pos = semi + 1;
+  }
+  out += tail.substr(pos);
+  const std::string decl =
+      "struct FragDepthOnlyOut {\n  @location(0u) dummy_color : vec4<f32>,\n"
+      "  @builtin(frag_depth) depth : f32,\n}\n\n";
+  wgsl = wgsl.substr(0, frag) + decl + wgsl.substr(frag, arrow - frag) + "-> FragDepthOnlyOut " +
+         out;
+}
+
 /* Bitmask of color locations the fragment entry point actually writes.
  * WebGPU rejects a pipeline whose color target has a non-zero writeMask but no
  * matching fragment output (EEVEE prepass shaders bind color targets they never
@@ -2109,6 +2152,7 @@ void WebGPUShader::ensure_translated()
     parse_wgsl_bindings(fragment_wgsl_, render_bindings_, 2);
     parse_wgsl_bindings(compute_wgsl_, compute_bindings_);
     frag_output_mask_ = parse_fragment_output_mask(fragment_wgsl_);
+    wrap_bare_frag_depth(fragment_wgsl_);
     parse_vertex_inputs(vertex_wgsl_, vertex_inputs_);
   }
 

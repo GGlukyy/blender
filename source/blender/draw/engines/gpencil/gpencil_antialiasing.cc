@@ -16,6 +16,41 @@
 
 namespace blender::draw::gpencil {
 
+/* Resolve of the color + revealage buffers: `dst = color + dst * reveal`. Done with dual-source
+ * blending, except on the web when the device cannot do it (Safari / iPad fails to create the
+ * pipeline, strokes then never reach the viewport): two draws, `dst *= reveal` then `dst += color`. */
+static void gpencil_resolve_pass_setup(PassSimple &pass,
+                                       gpu::Texture **blend_tx,
+                                       gpu::Texture **color_tx,
+                                       gpu::Texture **reveal_tx,
+                                       const bool do_anti_aliasing,
+                                       const bool only_alpha,
+                                       const float4 &metrics)
+{
+#ifdef __EMSCRIPTEN__
+  static const bool no_dual_source = getenv("WGPU_NO_DUALSRC") != nullptr;
+#else
+  constexpr bool no_dual_source = false;
+#endif
+  pass.init();
+  pass.state_set(DRW_STATE_WRITE_COLOR | (no_dual_source ? DRW_STATE_BLEND_MUL : DRW_STATE_BLEND_CUSTOM));
+  pass.shader_set(no_dual_source ? ShaderCache::get().antialiasing_nodual.get() :
+                                   ShaderCache::get().antialiasing[2].get());
+  pass.bind_texture("blend_tx", blend_tx);
+  pass.bind_texture("color_tx", color_tx);
+  pass.bind_texture("reveal_tx", reveal_tx);
+  pass.push_constant("do_anti_aliasing", do_anti_aliasing);
+  pass.push_constant("only_alpha", only_alpha);
+  pass.push_constant("viewport_metrics", metrics);
+  if (no_dual_source) {
+    pass.push_constant("reveal_pass", true);
+    pass.draw_procedural(GPU_PRIM_TRIS, 1, 3);
+    pass.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ADD_FULL);
+    pass.push_constant("reveal_pass", false);
+  }
+  pass.draw_procedural(GPU_PRIM_TRIS, 1, 3);
+}
+
 void Instance::antialiasing_init()
 {
   const float2 size_f = this->draw_ctx->viewport_size_get();
@@ -24,17 +59,8 @@ void Instance::antialiasing_init()
 
   if (this->simplify_antialias) {
     /* No AA fallback. */
-    PassSimple &pass = this->smaa_resolve_ps;
-    pass.init();
-    pass.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_CUSTOM);
-    pass.shader_set(ShaderCache::get().antialiasing[2].get());
-    pass.bind_texture("blend_tx", &this->color_tx);
-    pass.bind_texture("color_tx", &this->color_tx);
-    pass.bind_texture("reveal_tx", &this->reveal_tx);
-    pass.push_constant("do_anti_aliasing", false);
-    pass.push_constant("only_alpha", this->draw_wireframe);
-    pass.push_constant("viewport_metrics", metrics);
-    pass.draw_procedural(GPU_PRIM_TRIS, 1, 3);
+    gpencil_resolve_pass_setup(
+        this->smaa_resolve_ps, &this->color_tx, &this->color_tx, &this->reveal_tx, false, this->draw_wireframe, metrics);
     return;
   }
 
@@ -93,17 +119,13 @@ void Instance::antialiasing_init()
   }
   {
     /* Stage 3: Resolve. */
-    PassSimple &pass = this->smaa_resolve_ps;
-    pass.init();
-    pass.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_CUSTOM);
-    pass.shader_set(ShaderCache::get().antialiasing[2].get());
-    pass.bind_texture("blend_tx", &this->smaa_weight_tx);
-    pass.bind_texture("color_tx", &this->color_tx);
-    pass.bind_texture("reveal_tx", &this->reveal_tx);
-    pass.push_constant("do_anti_aliasing", true);
-    pass.push_constant("only_alpha", this->draw_wireframe);
-    pass.push_constant("viewport_metrics", metrics);
-    pass.draw_procedural(GPU_PRIM_TRIS, 1, 3);
+    gpencil_resolve_pass_setup(this->smaa_resolve_ps,
+                               &this->smaa_weight_tx,
+                               &this->color_tx,
+                               &this->reveal_tx,
+                               true,
+                               this->draw_wireframe,
+                               metrics);
   }
 }
 

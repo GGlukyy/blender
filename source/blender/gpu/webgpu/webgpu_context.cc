@@ -81,6 +81,7 @@ void wgpu_note_compile() {}
 #endif
 
 namespace blender::gpu {
+std::atomic<uint32_t> g_wgpu_hb[8];
 /* DEBUG BISECT: when true, capture the last world draw's color attachment
  * (render_pass_end path) instead of the film output (read_color_sync path), to
  * tell whether the world pass writes red or the film compute loses it.
@@ -99,13 +100,29 @@ bool wgpu_env_cap_gbuf()
 }
 }  // namespace blender::gpu
 
+#include <malloc.h>
 #include <mutex>
 static std::mutex g_buf_free_mutex;
 /* Each entry carries the free-sequence number at free time: it may only be destroyed once no
  * recording context started its encoder BEFORE the free (see WebGPUContext::recording_seq). */
 std::atomic<uint64_t> g_free_seq{0};
+/* Telemetry (wgpu_pending_free_n) must NOT take g_buf_free_mutex: the pool eviction below calls wgpuBufferDestroy()
+ * while holding it, and the JS telemetry wrapper around destroy() calls wgpu_pending_free_n() synchronously
+ * -> same thread locks twice -> "pthread mutex deadlock detected" (D3, reproduced 30. 10. by scripts/auto_win.sh light). */
+static std::atomic<int> g_pending_free_cnt{0};
 static std::vector<std::pair<WGPUBuffer, uint64_t>> g_buf_free_list;
 static std::vector<std::pair<WGPUTexture, uint64_t>> g_tex_free_list;
+#ifdef __EMSCRIPTEN__
+/* T2 telemetry: number of destroyed-but-not-yet-released buffers + textures (read from JS). */
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t *wgpu_hb_ptr()
+{
+  return reinterpret_cast<uint32_t *>(blender::gpu::g_wgpu_hb);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE int wgpu_pending_free_n()
+{
+  return g_pending_free_cnt.load(std::memory_order_relaxed);
+}
+#endif
 void wgpu_texture_free(WGPUTexture t)
 {
   if (t == nullptr) {
@@ -113,6 +130,7 @@ void wgpu_texture_free(WGPUTexture t)
   }
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
   g_tex_free_list.push_back({t, ++g_free_seq});
+  g_pending_free_cnt.fetch_add(1, std::memory_order_relaxed);
 }
 void wgpu_buffer_free(WGPUBuffer b)
 {
@@ -121,6 +139,7 @@ void wgpu_buffer_free(WGPUBuffer b)
   }
   std::lock_guard<std::mutex> lock(g_buf_free_mutex);
   g_buf_free_list.push_back({b, ++g_free_seq}); /* Keeps the caller's reference until the flush. */
+  g_pending_free_cnt.fetch_add(1, std::memory_order_relaxed);
 }
 /* K3/H1-C: pool of whole-buffer-overwritten per-frame buffers keyed by (size, usage). Fast drags
  * created ~1200 buffers/s; WebKit keeps the memory of destroyed buffers while a bind group
@@ -168,8 +187,13 @@ WGPUBuffer wgpu_buffer_acquire(WGPUDevice dev, const WGPUBufferDescriptor *d)
   return wgpuDeviceCreateBuffer(dev, d);
 }
 uint64_t wgpu_min_recording_seq();
+namespace blender::gpu {
+void wgpu_process_events();
+}
 void wgpu_flush_buffer_frees()
 {
+  /* Finish map events of failed sync readbacks (see map_read_sync). */
+  blender::gpu::wgpu_process_events();
   /* Only entries freed before every recording context's encoder started are safe to destroy. */
   const uint64_t limit = wgpu_min_recording_seq();
   std::vector<WGPUBuffer> list;
@@ -196,6 +220,7 @@ void wgpu_flush_buffer_frees()
       }
     }
     g_tex_free_list.swap(keep_t);
+    g_pending_free_cnt.store(int(g_buf_free_list.size() + g_tex_free_list.size()), std::memory_order_relaxed);
   }
   /* WGPU_NO_DESTROY=buf|tex|all (debug): skip destroy() and only release, like before M2. */
   static const char *nd = getenv("WGPU_NO_DESTROY");
@@ -348,6 +373,13 @@ static WGPUInstance webgpu_instance()
     s_instance = wgpuCreateInstance(&idesc);
   }
   return s_instance;
+}
+
+void wgpu_process_events()
+{
+  if (WGPUInstance inst = webgpu_instance()) {
+    wgpuInstanceProcessEvents(inst);
+  }
 }
 
 WebGPUContext::WebGPUContext(GHOST_IWindow * /*ghost_window*/,
@@ -673,7 +705,9 @@ void WebGPUContext::flush_encoder()
   WGPUCommandBufferDescriptor cb_desc = {};
   WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder_, &cb_desc);
   if (queue_ && cmd) {
+    wgpu_hb_phase(WGPU_PH_SUBMIT);
     wgpuQueueSubmit(queue_, 1, &cmd);
+    wgpu_hb_back();
   }
   if (cmd) {
     wgpuCommandBufferRelease(cmd);
@@ -1548,6 +1582,9 @@ static bool g_wgpu_content_signaled = false;
 
 void WebGPUContext::present_backbuffer(int w, int h)
 {
+  wgpu_hb_phase(WGPU_PH_PRESENT);
+  g_wgpu_hb[1].fetch_add(1, std::memory_order_relaxed);
+  g_wgpu_hb[4].store(uint32_t(mallinfo().uordblks), std::memory_order_relaxed);
   if (device_ == nullptr) {
     return;
   }
@@ -1763,6 +1800,7 @@ extern "C" void blender_webgpu_present(int width, int height)
   WebGPUContext *ctx = WebGPUContext::get();
   if (ctx) {
     ctx->present_backbuffer(width, height);
+    blender::gpu::wgpu_hb_phase(blender::gpu::WGPU_PH_IDLE);
   }
 }
 extern "C" void blender_webgpu_backbuffer_size(int width, int height)
@@ -2091,6 +2129,17 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
   }
   ShaderInterface *iface = shader->interface;
   std::vector<WGPUBindGroupEntry> entries;
+  /* snapshot_for_sampling() returns a NEW view every call (D6: leaked ~30 views/s in EEVEE, the JS wrapper stayed alive forever):
+   * the bind group (and the cache, via AddRef below) keep their own reference, so drop ours on every exit path. */
+  struct OwnedViews {
+    std::vector<WGPUTextureView> v;
+    ~OwnedViews()
+    {
+      for (WGPUTextureView x : v) {
+        wgpuTextureViewRelease(x);
+      }
+    }
+  } owned_views;
   bool incomplete = false;
   extern int g_stat_bindgroups;
   g_stat_bindgroups++;
@@ -2313,6 +2362,7 @@ WGPUBindGroup WebGPUContext::build_bind_group(WebGPUShader *shader,
           fflush(stderr);
         }
         entries[i].textureView = snap;
+        owned_views.v.push_back(snap);
       }
       break;
     }
@@ -2659,26 +2709,62 @@ bool WebGPUContext::map_read_sync(WGPUBuffer buf, size_t size, void *dst)
   if (buf == nullptr || dst == nullptr) {
     return false;
   }
+  /* No JSPI/Asyncify (iPad Safari, this build): the blocking wait fails with WaitStatus Error on every call, so after the
+   * first such failure (and no success so far) stop issuing mapAsync at all — each one leaked its buffer (D6). */
+  static bool s_ever_ok = false, s_dead = false;
+  if (s_dead) {
+    return false;
+  }
+  /* D6: with WaitAnyOnly a FAILED wait (ws=3, no JSPI on Safari/Chrome here) left the map event unprocessed forever -> the buffer
+   * reference held by the event was never dropped (~10 leaked JS wrappers/s). AllowProcessEvents + heap state lets
+   * wgpuInstanceProcessEvents() (once per frame, wgpu_flush_buffer_frees) finish the event later. */
   struct MapState {
     WGPUMapAsyncStatus status = WGPUMapAsyncStatus_Error;
-  } st;
-  WGPUBufferMapCallbackInfo cb = {};
-  cb.mode = WGPUCallbackMode_WaitAnyOnly;
-  cb.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void *ud1, void *) {
-    static_cast<MapState *>(ud1)->status = status;
+    bool done = false;
+    bool abandoned = false;
   };
-  cb.userdata1 = &st;
+  MapState *st = new MapState();
+  WGPUBufferMapCallbackInfo cb = {};
+  cb.mode = WGPUCallbackMode_AllowProcessEvents;
+  cb.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void *ud1, void *) {
+    MapState *m = static_cast<MapState *>(ud1);
+    m->status = status;
+    m->done = true;
+    if (m->abandoned) {
+      delete m;
+    }
+  };
+  cb.userdata1 = st;
   WGPUFuture fut = wgpuBufferMapAsync(buf, WGPUMapMode_Read, 0, size, cb);
   WGPUFutureWaitInfo wi = {fut, false};
+  wgpu_hb_phase(WGPU_PH_MAP_READ);
   const WGPUWaitStatus ws = wgpuInstanceWaitAny(webgpu_instance(), 1, &wi, UINT64_MAX);
-  if (ws != WGPUWaitStatus_Success || st.status != WGPUMapAsyncStatus_Success) {
+  wgpu_hb_back();
+  if (ws != WGPUWaitStatus_Success || st->status != WGPUMapAsyncStatus_Success) {
     static int s_logged = 0;
     if (s_logged < 8) {
       s_logged++;
-      fprintf(stderr, "WGPU_MAP sync map failed ws=%d st=%d\n", int(ws), int(st.status));
+      fprintf(stderr, "WGPU_MAP sync map failed ws=%d st=%d\n", int(ws), int(st->status));
+      fflush(stderr);
+    }
+    if (st->done) {
+      delete st;
+    }
+    else {
+      st->abandoned = true; /* the callback (from ProcessEvents) deletes it */
+    }
+    if (ws == WGPUWaitStatus_Error && !s_ever_ok) {
+      s_dead = true;
+      fprintf(stderr, "WGPU_MAP sync readback unsupported (no JSPI) -> disabled, callers use host fallback\n");
       fflush(stderr);
     }
     return false;
+  }
+  delete st;
+  if (!s_ever_ok) {
+    s_ever_ok = true;
+    fprintf(stderr, "WGPU_MAP sync readback works (first success)\n");
+    fflush(stderr);
   }
   const void *p = wgpuBufferGetConstMappedRange(buf, 0, size);
   if (p == nullptr) {

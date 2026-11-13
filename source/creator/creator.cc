@@ -463,18 +463,33 @@ int main(int argc,
            * which Safari does much later than Chrome). */
           const gmem = new BroadcastChannel("blender-gpumem");
           const gst = {buf: 0, buf_mb: 0, tex: 0, tex_mb: 0, buf_new: 0, buf_destroyed: 0, buf_gc: 0,
-                       tex_new: 0, tex_destroyed: 0, tex_gc: 0, bg_new: 0, view_new: 0, lag_ms: 0, lag_max: 0};
+                       tex_new: 0, tex_destroyed: 0, tex_gc: 0, bg_new: 0, view_new: 0, lag_ms: 0, lag_max: 0,
+                       /* T2 (A/B backpressure vs JS leak): */
+                       submits: 0, completed: 0, q_depth: 0, q_depth_max: 0, write_mb: 0, write_mb_s: 0,
+                       map_n: 0, map_mb: 0, pipelines_created: 0, wgpu_live: 0, pending_free: 0};
+          globalThis.__gst = gst;
+          let gwbytes = 0, gmbytes = 0, gwlast = 0, gwprev = 0;
           let glast = 0, gbytes = {buf: 0, tex: 0};
           const gpost = (force, extra) => {
             const n = performance.now();
             if (!force && n - glast < 1000) return;
             glast = n;
             gst.buf_mb = Math.round(gbytes.buf / 1048576); gst.tex_mb = Math.round(gbytes.tex / 1048576);
+            gst.tlive = {}; for (const k in gtl) if (gtl[k] >= 1048576) gst.tlive[k] = Math.round(gtl[k] / 1048576);
+            gst.q_depth = gst.submits - gst.completed; if (gst.q_depth > gst.q_depth_max) gst.q_depth_max = gst.q_depth;
+            gst.write_mb = Math.round(gwbytes / 1048576); gst.map_mb = Math.round(gmbytes / 1048576);
+            if (gwlast) gst.write_mb_s = +((gwbytes - gwprev) / 1048576 / ((n - gwlast) / 1000)).toFixed(2);
+            gwlast = n; gwprev = gwbytes;
+            try { gst.pending_free = _wgpu_pending_free_n(); } catch (e) {}
+            try { if (typeof WebGPU !== "undefined") gst.wgpu_live = Object.keys(WebGPU.Internals.jsObjects).length; } catch (e) {}
             gmem.postMessage(Object.assign({}, gst, extra || {}));
           };
+          /* B3j: live texture MB per label/format/size ("tlive", only >= 1 MB groups are posted). */
+          const gtl = {};
+          const gtlive_sub = (r) => { if (r.tk) { gtl[r.tk] -= r.size; if (gtl[r.tk] <= 0) delete gtl[r.tk]; } };
           const grecs = new WeakMap();
           const greg = new FinalizationRegistry((r) => {
-            if (!r.dead) { r.dead = true; gst[r.k]--; gbytes[r.k] -= r.size; gst[r.k + "_gc"]++; }
+            if (!r.dead) { r.dead = true; gst[r.k]--; gbytes[r.k] -= r.size; gst[r.k + "_gc"]++; gtlive_sub(r); }
           });
           const gtrack = (k, obj, size) => {
             const r = {k, size, dead: false};
@@ -487,7 +502,7 @@ int main(int argc,
             const orig = proto.destroy;
             proto.destroy = function () {
               const r = grecs.get(this);
-              if (r && !r.dead) { r.dead = true; gst[k]--; gbytes[k] -= r.size; gst[k + "_destroyed"]++; }
+              if (r && !r.dead) { r.dead = true; gst[k]--; gbytes[k] -= r.size; gst[k + "_destroyed"]++; gtlive_sub(r); }
               gpost(false);
               return orig.apply(this, arguments);
             };
@@ -505,7 +520,13 @@ int main(int argc,
                   l = (sz.depthOrArrayLayers !== undefined ? sz.depthOrArrayLayers : sz[2]) || 1;
             const tk = (d.label || "") + "/" + d.format + "/" + w + "x" + h;
             gst.thist[tk] = (gst.thist[tk] || 0) + 1;
-            return gtrack("tex", gct(d), w * h * l * 4 * (d.mipLevelCount > 1 ? 1.34 : 1));
+            /* B3j: real bytes per texel (was 4 for every format: rgba16float / depth32float-stencil8 counted half). */
+            const f = d.format, bpp = /^rgba32/.test(f) ? 16 : /^(rgba16|rg32|depth32float-stencil8)/.test(f) ? 8 :
+                  /^(rg8|r16|depth16)/.test(f) ? 2 : /^(r8|stencil8)/.test(f) ? 1 : 4;
+            const size = w * h * l * bpp * (d.sampleCount || 1) * (d.mipLevelCount > 1 ? 1.34 : 1);
+            const t = gtrack("tex", gct(d), size);
+            grecs.get(t).tk = tk; gtl[tk] = (gtl[tk] || 0) + size;
+            return t;
           };
           /* IPAD_CRASH H1-0: bind group / view creation counters and GPU queue lag (every 2 s). */
           const gcbg = gdev.createBindGroup.bind(gdev);
@@ -513,6 +534,26 @@ int main(int argc,
           if (typeof GPUTexture !== "undefined") {
             const gcv = GPUTexture.prototype.createView;
             GPUTexture.prototype.createView = function () { gst.view_new++; return gcv.apply(this, arguments); };
+          }
+          /* T2: queue depth (submits - completed), CPU->GPU copy volume, mapAsync volume, pipelines. */
+          {
+            const qp = GPUQueue.prototype, qsub = qp.submit, qwb = qp.writeBuffer, qwt = qp.writeTexture;
+            qp.submit = function () {
+              gst.submits++;
+              const r = qsub.apply(this, arguments);
+              this.onSubmittedWorkDone().then(() => { gst.completed++; });
+              return r;
+            };
+            qp.writeBuffer = function (b, o, d, dofs, sz) {
+              gwbytes += d.byteLength === undefined ? 0 : (sz !== undefined ? sz * (d.BYTES_PER_ELEMENT || 1) : d.byteLength);
+              return qwb.apply(this, arguments);
+            };
+            qp.writeTexture = function (dst, d) { gwbytes += d.byteLength || 0; return qwt.apply(this, arguments); };
+            const bmap = GPUBuffer.prototype.mapAsync;
+            GPUBuffer.prototype.mapAsync = function (m, o, sz) { gst.map_n++; gmbytes += sz !== undefined ? sz : this.size; return bmap.apply(this, arguments); };
+            for (const fn of ["createRenderPipeline", "createComputePipeline", "createRenderPipelineAsync", "createComputePipelineAsync"]) {
+              const o = gdev[fn].bind(gdev); gdev[fn] = (d) => { gst.pipelines_created++; return o(d); };
+            }
           }
           setInterval(() => {
             const t = performance.now();
@@ -549,8 +590,21 @@ int main(int argc,
           }
           if (typeof GPUBuffer !== "undefined") gdestroy("buf", GPUBuffer.prototype);
           if (typeof GPUTexture !== "undefined") gdestroy("tex", GPUTexture.prototype);
+          /* B3d: lost reason "destroyed" means someone called device.destroy() (our code, e.g.
+           * emwgpuDeviceDestroy on the last wgpuDeviceRelease) or WebKit did it itself. Keep the
+           * caller's stack so the telemetry tells the two apart. */
+          let gdstack = "";
+          if (typeof GPUDevice !== "undefined") {
+            const gdd = GPUDevice.prototype.destroy;
+            GPUDevice.prototype.destroy = function () {
+              gdstack = String(new Error().stack).slice(0, 1500);
+              console.log("WEBGPU_DEVICE_DESTROY " + gdstack.split(String.fromCharCode(10)).join(" | "));
+              return gdd.apply(this, arguments);
+            };
+          }
           gdev.lost.then(
-              (i) => { gpost(true, {lost_reason: i.reason, lost_message: String(i.message).slice(0, 300)});
+              (i) => { gpost(true, {lost_reason: i.reason, lost_message: String(i.message).slice(0, 300),
+                                    destroy_called: gdstack ? 1 : 0, destroy_stack: gdstack});
                        console.log("WEBGPU_LOST " + i.reason + " " + i.message); _blender_web_device_lost(); });
           _blender_web_device_ready();
         }

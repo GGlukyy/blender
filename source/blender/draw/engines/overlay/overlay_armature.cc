@@ -29,6 +29,7 @@
 #include "BKE_action.hh"
 #include "BKE_armature.hh"
 #include "BKE_deform.hh"
+#include "BKE_mesh.hh"
 #include "BKE_object.hh"
 #include "BKE_pose.hh"
 
@@ -1421,6 +1422,25 @@ static void bone_draw_octa(const Armatures::DrawContext *ctx,
   const float *col_wire = get_bone_wire_color(ctx, boneflag);
   const float *col_hint = get_bone_hint_color(ctx, boneflag);
 
+#ifdef __EMSCRIPTEN__
+  /* CPU pick fallback: the filled body is clickable, not just the axis. */
+  if (ctx->is_filled && ctx->res->selection_type != draw::select::SelectionType::DISABLED) {
+    const float4x4 m = ctx->ob->object_to_world() * float4x4(bone.disp_mat());
+    const float3 root = math::transform_point(m, float3(0.0f));
+    const float3 tip = math::transform_point(m, float3(0.0f, 1.0f, 0.0f));
+    const float3 ring[4] = {math::transform_point(m, float3(0.1f, 0.1f, 0.1f)),
+                            math::transform_point(m, float3(0.1f, 0.1f, -0.1f)),
+                            math::transform_point(m, float3(-0.1f, 0.1f, -0.1f)),
+                            math::transform_point(m, float3(-0.1f, 0.1f, 0.1f))};
+    ctx->res->bone_shape_edges_override.extend({root, tip});
+    for (const int i : IndexRange(4)) {
+      ctx->res->bone_shape_tris_override.extend({root, ring[i], ring[(i + 1) % 4]});
+      ctx->res->bone_shape_tris_override.extend({tip, ring[i], ring[(i + 1) % 4]});
+    }
+    ctx->res->has_bone_shape_override = true;
+  }
+#endif
+
   auto sel_id = ctx->res->select_id(*ctx->ob_ref, select_id | BONESEL_BONE);
   float4x4 bone_mat = ctx->ob->object_to_world() * float4x4(bone.disp_mat());
 
@@ -1520,6 +1540,19 @@ static void bone_draw_b_bone(const Armatures::DrawContext *ctx,
         reinterpret_cast<Mat4 *>(const_cast<float (*)[4][4]>(bone.as_editbone()->disp_bbone_mat)),
         bone.as_editbone()->segments};
   }
+
+#ifdef __EMSCRIPTEN__
+  /* CPU pick fallback: the drawn curve, not the straight head-tail line. */
+  if (ctx->res->selection_type != draw::select::SelectionType::DISABLED) {
+    for (const Mat4 &in_bone_mat : bbone_matrices) {
+      const float4x4 m = ctx->ob->object_to_world() * float4x4(in_bone_mat.mat);
+      ctx->res->bone_shape_edges_override.append(math::transform_point(m, float3(0.0f)));
+      ctx->res->bone_shape_edges_override.append(
+          math::transform_point(m, float3(0.0f, 1.0f, 0.0f)));
+    }
+    ctx->res->has_bone_shape_override = true;
+  }
+#endif
 
   auto sel_id = ctx->res->select_id(*ctx->ob_ref, select_id | BONESEL_BONE);
 
@@ -1624,6 +1657,104 @@ static void bone_draw_wire(const Armatures::DrawContext *ctx,
   }
 }
 
+#ifdef __EMSCRIPTEN__
+/* CPU pick fallback: world-space edges of the custom shape, so that a control is picked by what is
+ * drawn and not by its invisible axis. Curves and fonts keep the axis. */
+static void bone_pick_custom_shape(const Armatures::DrawContext *ctx,
+                                   const float4x4 &world,
+                                   Object *custom,
+                                   const eBone_Flag boneflag)
+{
+  Resources &res = *ctx->res;
+  const auto add_edge = [&](const float4x4 &m, const float3 &a, const float3 &b) {
+    res.bone_shape_edges_override.append(math::transform_point(m, a));
+    res.bone_shape_edges_override.append(math::transform_point(m, b));
+  };
+  if (custom->type == OB_EMPTY) {
+    const float4x4 m = world * math::from_scale<float4x4>(float3(custom->empty_drawsize));
+    /* Lies in the plane of the two given axes. */
+    const auto add_ring = [&](const int ax, const int ay) {
+      constexpr int resolution = 32;
+      for (const int i : IndexRange(resolution)) {
+        const float a0 = 2.0f * float(M_PI) * i / resolution;
+        const float a1 = 2.0f * float(M_PI) * (i + 1) / resolution;
+        float3 p0(0.0f), p1(0.0f);
+        p0[ax] = std::sin(a0), p0[ay] = std::cos(a0);
+        p1[ax] = std::sin(a1), p1[ay] = std::cos(a1);
+        add_edge(m, p0, p1);
+      }
+    };
+    const float3 x(1.0f, 0.0f, 0.0f), y(0.0f, 1.0f, 0.0f), z(0.0f, 0.0f, 1.0f);
+    switch (custom->empty_drawtype) {
+      case OB_PLAINAXES:
+        add_edge(m, -x, x);
+        add_edge(m, -y, y);
+        add_edge(m, -z, z);
+        break;
+      case OB_SINGLE_ARROW:
+        add_edge(m, float3(0.0f), z);
+        break;
+      case OB_CUBE:
+        for (const int a : IndexRange(3)) {
+          const int b = (a + 1) % 3, c = (a + 2) % 3;
+          for (const int s : IndexRange(4)) {
+            float3 p0(0.0f);
+            p0[b] = (s & 1) ? 1.0f : -1.0f;
+            p0[c] = (s & 2) ? 1.0f : -1.0f;
+            float3 p1 = p0;
+            p0[a] = -1.0f;
+            p1[a] = 1.0f;
+            add_edge(m, p0, p1);
+          }
+        }
+        break;
+      case OB_CIRCLE:
+        add_ring(0, 2);
+        break;
+      case OB_EMPTY_SPHERE:
+        add_ring(0, 1);
+        add_ring(0, 2);
+        add_ring(1, 2);
+        break;
+      case OB_EMPTY_CONE:
+        add_ring(0, 2);
+        for (const int i : IndexRange(8)) {
+          const float a = 2.0f * float(M_PI) * i / 8;
+          add_edge(m, float3(std::sin(a), 0.0f, std::cos(a)), float3(0.0f, 2.0f, 0.0f));
+        }
+        break;
+      case OB_ARROWS:
+        add_edge(m, float3(0.0f), x);
+        add_edge(m, float3(0.0f), y);
+        add_edge(m, float3(0.0f), z);
+        break;
+      default: /* OB_EMPTY_IMAGE: not drawn, not pickable. */
+        break;
+    }
+    res.has_bone_shape_override = true;
+    return;
+  }
+  const Mesh *mesh = BKE_object_get_evaluated_mesh_no_subsurf_unchecked(custom);
+  if (mesh == nullptr) {
+    return;
+  }
+  const Span<float3> positions = mesh->vert_positions();
+  for (const int2 &edge : mesh->edges()) {
+    add_edge(world, positions[edge[0]], positions[edge[1]]);
+  }
+  if (ctx->is_filled && !(boneflag & (BONE_DRAWWIRE | BONE_DRAW_LOCKED_WEIGHT))) {
+    const Span<int> corner_verts = mesh->corner_verts();
+    for (const int3 &tri : mesh->corner_tris()) {
+      for (const int k : IndexRange(3)) {
+        res.bone_shape_tris_override.append(
+            math::transform_point(world, positions[corner_verts[tri[k]]]));
+      }
+    }
+  }
+  res.has_bone_shape_override = true;
+}
+#endif
+
 static void bone_draw(const eArmature_Drawtype drawtype,
                       const bool use_custom_shape,
                       const Armatures::DrawContext *ctx,
@@ -1631,6 +1762,37 @@ static void bone_draw(const eArmature_Drawtype drawtype,
                       const eBone_Flag boneflag,
                       const int select_id)
 {
+#ifdef __EMSCRIPTEN__
+  /* CPU pick fallback needs a per-bone box (see SelectMap::bone_bounds_override). */
+  {
+    const float4x4 world = ctx->ob->object_to_world() * float4x4(bone.disp_mat());
+    float3 bmin(FLT_MAX), bmax(-FLT_MAX);
+    for (int c = 0; c < 8; c++) {
+      const float3 p = math::transform_point(world,
+                                             float3((c & 1) ? 0.15f : -0.15f,
+                                                    (c & 2) ? 1.0f : 0.0f,
+                                                    (c & 4) ? 0.15f : -0.15f));
+      bmin = math::min(bmin, p);
+      bmax = math::max(bmax, p);
+    }
+    ctx->res->bone_bounds_override = std::make_pair(bmin, bmax);
+    ctx->res->bone_segment_override = std::make_pair(
+        math::transform_point(world, float3(0.0f)),
+        math::transform_point(world, float3(0.0f, 1.0f, 0.0f)));
+    if (use_custom_shape && ctx->res->selection_type != draw::select::SelectionType::DISABLED) {
+      bone_pick_custom_shape(ctx, world, bone.as_posebone()->custom, boneflag);
+    }
+  }
+  struct BoneBoundsReset {
+    const Armatures::DrawContext *ctx;
+    ~BoneBoundsReset()
+    {
+      ctx->res->bone_bounds_override.reset();
+      ctx->res->bone_segment_override.reset();
+    }
+  } bone_bounds_reset{ctx};
+#endif
+
   if (use_custom_shape) {
     bone_draw_custom_shape(ctx, bone, boneflag, select_id);
     return;

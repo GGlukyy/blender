@@ -27,6 +27,9 @@ class WebGPUStorageBuf : public StorageBuf {
  private:
   /** Lazily-created GPU buffer; null until a device is available. */
   WGPUBuffer buffer_ = nullptr;
+  /** Reused MapRead staging buffer for read() (D6: a new one per read leaked ~10 JS wrappers/s). */
+  WGPUBuffer read_staging_ = nullptr;
+  size_t read_staging_size_ = 0;
   GPUUsageType usage_ = GPUUsageType(-1);
   int slot_ = -1;
   /** Allocation size, rounded up to 4 bytes as WebGPU requires. */
