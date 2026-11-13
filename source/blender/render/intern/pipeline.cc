@@ -2075,6 +2075,7 @@ void RE_RenderFrame(Render *re,
     do_render_full_pipeline(re);
 
     const bool should_write = write_still && !(re->flag & R_SKIP_WRITE);
+    bool is_written = false;
     if (should_write && !G.is_break) {
       if (BKE_imtype_is_movie(rd.im_format.imtype)) {
         /* operator checks this but in case its called from elsewhere */
@@ -2117,7 +2118,8 @@ void RE_RenderFrame(Render *re,
           else
 #endif
           {
-            do_write_image_or_movie(re, bmain, scene, 0, filepath_override, write_still);
+            is_written = do_write_image_or_movie(
+                re, bmain, scene, 0, filepath_override, write_still);
           }
         }
         else {
@@ -2126,9 +2128,9 @@ void RE_RenderFrame(Render *re,
       }
     }
 
-    /* keep after file save */
+    /* Keep after file save. */
     render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_POST);
-    if (should_write) {
+    if (is_written) {
       render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_WRITE);
     }
   }
@@ -2446,6 +2448,10 @@ void RE_web_flush_pending_write(Main *bmain_now, const bool pixels_ok)
       re, bmain_now, scene, 0, g_web_pending_write.filepath, true);
   fprintf(stderr, "WGPU_FILM deferred write %s ok=%d\n", g_web_pending_write.filepath, int(ok));
   fflush(stderr);
+  if (ok) {
+    /* 5.3: render_write handlers run after the file exists (deferred on the web). */
+    render_callback_exec_id(re, bmain_now, &scene->id, BKE_CB_EVT_RENDER_WRITE);
+  }
 }
 #endif
 
@@ -2723,15 +2729,26 @@ void RE_RenderAnim(Render *re,
     totrendered++;
 
     const bool should_write = !(re->flag & R_SKIP_WRITE);
+    bool is_written = false;
     if (re->display->test_break() == 0) {
       if (!G.is_break && should_write) {
-        if (!do_write_image_or_movie(re, bmain, scene, totvideos, nullptr, write_anim)) {
+        is_written = do_write_image_or_movie(re, bmain, scene, totvideos, nullptr, write_anim);
+        if (!is_written) {
           G.is_break = true;
         }
       }
     }
     else {
       G.is_break = true;
+    }
+
+    /* A written frame is complete, even if cancelled during file save. */
+    if (is_written || !G.is_break) {
+      /* keep after file save */
+      render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_POST);
+      if (is_written) {
+        render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_WRITE);
+      }
     }
 
     if (G.is_break == true) {
@@ -2762,16 +2779,7 @@ void RE_RenderAnim(Render *re,
           }
         }
       }
-
       break;
-    }
-
-    if (G.is_break == false) {
-      /* keep after file save */
-      render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_POST);
-      if (should_write) {
-        render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_WRITE);
-      }
     }
   }
 
