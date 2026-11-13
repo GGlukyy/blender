@@ -1039,7 +1039,7 @@ void DeferredLayer::end_sync(bool is_first_pass,
       pass.bind_image(RBUFS_VALUE_SLOT, &inst_.render_buffers.rp_value_tx);
       pass.bind_image("radiance_feedback_img", &radiance_feedback_tx_);
       /* Read side of the feedback (unused sampler when the feedback path is off). */
-      if (use_feedback_output_ && use_clamp_direct_) {
+      if (use_feedback_output_ && do_modify_radiance(inst_)) {
         pass.bind_texture("radiance_feedback_tx", &radiance_feedback_tx_);
       }
       else {
