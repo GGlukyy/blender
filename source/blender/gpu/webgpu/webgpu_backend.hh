@@ -96,6 +96,16 @@ class WebGPUWorkInFlight : public WorkInFlight {
   void end_work() override {}
 };
 
+/* Cycles web (C1): CPU-only fence; GPU work is submitted in order on the main thread. */
+class WebGPUFence : public Fence {
+ public:
+  void signal() override
+  {
+    signalled_ = true;
+  }
+  void wait() override {}
+};
+
 class WebGPUBackend : public GPUBackend {
  private:
   WGPUInstance instance_ = nullptr;
@@ -690,7 +700,7 @@ class WebGPUBackend : public GPUBackend {
   IndexBuf *indexbuf_alloc() override { return new WebGPUIndexBuf; }
 
   /* TODO: still stubs — implement as the render path starts exercising them. */
-  Fence *fence_alloc() override { return nullptr; }
+  Fence *fence_alloc() override { return new WebGPUFence(); }
   /* N1b (5.3): ray-tracing acceleration structures are unsupported on WebGPU (same as GL). */
   TopLevelAS *tlas_alloc(const char * /*name*/) override { return nullptr; }
   BottomLevelAS *blas_alloc(const char * /*name*/) override { return nullptr; }
@@ -699,7 +709,7 @@ class WebGPUBackend : public GPUBackend {
   {
     return new WebGPUWorkInFlight();
   }
-  PixelBuffer *pixelbuf_alloc(size_t /*size*/) override { return nullptr; }
+  PixelBuffer *pixelbuf_alloc(size_t size) override { return new WebGPUPixelBuffer(size); }
   /* Occlusion queries: WebGPU supports them, but reading results back is async
    * (ResolveQuerySet → buffer map) while get_occlusion_result() is synchronous —
    * same no-JSPI wall as all readbacks. Return a counting stub with zero

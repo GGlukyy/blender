@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include <algorithm>
+
 #include "gpu_texture_private.hh"
 
 #include <map>
@@ -21,6 +23,34 @@
 #include <webgpu/webgpu.h>
 
 namespace blender::gpu {
+
+/* Cycles web (C1): CPU memory standing in for a GPU pixel buffer (no async readback/mapping). */
+class WebGPUPixelBuffer : public PixelBuffer {
+  void *data_ = nullptr;
+
+ public:
+  WebGPUPixelBuffer(size_t size) : PixelBuffer(size)
+  {
+    data_ = new uint8_t[size];
+  }
+  ~WebGPUPixelBuffer() override
+  {
+    delete[] static_cast<uint8_t *>(data_);
+  }
+  void *map() override
+  {
+    return data_;
+  }
+  void unmap() override {}
+  GPUPixelBufferNativeHandle get_native_handle() override
+  {
+    return {};
+  }
+  size_t get_size() override
+  {
+    return size_;
+  }
+};
 
 class WebGPUTexture : public Texture {
  private:
@@ -79,11 +109,14 @@ class WebGPUTexture : public Texture {
                   eGPUDataFormat format,
                   const void *data,
                   uint unpack_row_length = 0) override;
-  void update_sub(int /*offset*/[3],
-                  int /*extent*/[3],
-                  eGPUDataFormat /*format*/,
-                  GPUPixelBuffer * /*pixbuf*/) override
+  void update_sub(int offset[3],
+                  int extent[3],
+                  eGPUDataFormat format,
+                  GPUPixelBuffer *pixbuf) override
   {
+    /* Cycles web (C1): pixel buffers are plain CPU memory (see #WebGPUPixelBuffer). */
+    int ext[3] = {extent[0], extent[1], std::max(extent[2], 1)};
+    update_sub(0, offset, ext, format, static_cast<WebGPUPixelBuffer *>(unwrap(pixbuf))->map());
   }
 
   void generate_mipmap() override;

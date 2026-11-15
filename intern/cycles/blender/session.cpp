@@ -1126,6 +1126,15 @@ void BlenderSession::ensure_display_driver_if_needed()
     return;
   }
 
+#ifdef __EMSCRIPTEN__
+  /* Web: F12 renders (no 3D viewport) go through the output driver; a display driver would
+   * call into the GPU module from the Cycles session thread (WebGPU handles are bound to the
+   * main thread). */
+  if (!b_rv3d) {
+    return;
+  }
+#endif
+
   if ((b_engine.flag & blender::RE_ENGINE_PREVIEW) != 0) {
     /* TODO(sergey): Investigate whether DisplayDriver can be used for the preview as well. */
     return;
