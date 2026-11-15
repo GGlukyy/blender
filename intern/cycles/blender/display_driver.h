@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <mutex>
+
 #include <atomic>
 
 #include "session/display_driver.h"
@@ -138,6 +140,10 @@ class BlenderDisplayDriver : public DisplayDriver {
 
   float2 zoom_ = make_float2(1.0f, 1.0f);
 
+#ifdef __EMSCRIPTEN__
+  /* Web: serializes the session thread's CPU pixel buffer writes with draw() on the main thread. */
+  std::mutex web_lock_;
+#endif
   thread_condition_variable has_update_cond_;
   thread_mutex has_update_mutex_;
   bool update_pending_ = true;

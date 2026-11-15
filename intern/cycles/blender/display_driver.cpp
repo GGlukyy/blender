@@ -185,6 +185,14 @@ class DisplayGPUTexture {
   int width = 0;
   int height = 0;
 
+#ifdef __EMSCRIPTEN__
+  /* Web: the Cycles session thread must not touch the GPU module (WebGPU handles are bound to
+   * the main thread). It only records the wanted size here; the texture is (re)created in
+   * #BlenderDisplayDriver::draw on the main thread. */
+  int pending_width = 0;
+  int pending_height = 0;
+#endif
+
  protected:
   void reset()
   {
@@ -422,6 +430,10 @@ bool BlenderDisplayDriver::update_begin(const Params &params,
    * exclusion.
    *
    * This locking is not performed on the Cycles side, because that would cause lock inversion. */
+#ifdef __EMSCRIPTEN__
+  /* Web: held until update_end(); excludes draw() (main thread) from the CPU pixel buffer. */
+  web_lock_.lock();
+#else
   if (!gpu_context_enable()) {
     return false;
   }
@@ -430,6 +442,7 @@ bool BlenderDisplayDriver::update_begin(const Params &params,
    * PBO-to-texture copy before reusing the PBO for the next tile. */
   blender::GPU_fence_wait(gpu_upload_sync_);
   blender::GPU_fence_wait(gpu_render_sync_);
+#endif
 
   DrawTile &current_tile = tiles_->current_tile.tile;
   DisplayGPUPixelBuffer &current_tile_buffer_object = tiles_->current_tile.buffer_object;
@@ -455,6 +468,17 @@ bool BlenderDisplayDriver::update_begin(const Params &params,
   const int buffer_height = params.size.y;
   bool interop_recreated = false;
 
+#ifdef __EMSCRIPTEN__
+  current_tile.texture.pending_width = texture_width;
+  current_tile.texture.pending_height = texture_height;
+  if (!current_tile_buffer_object.gpu_resources_ensure(
+          buffer_width, buffer_height, interop_recreated))
+  {
+    graphics_interop_buffer_.clear();
+    web_lock_.unlock();
+    return false;
+  }
+#else
   if (!current_tile_buffer_object.gpu_resources_ensure(
           buffer_width, buffer_height, interop_recreated) ||
       !current_tile.texture.gpu_resources_ensure(texture_width, texture_height))
@@ -464,6 +488,7 @@ bool BlenderDisplayDriver::update_begin(const Params &params,
     gpu_context_disable();
     return false;
   }
+#endif
 
   if (interop_recreated) {
     graphics_interop_buffer_.clear();
@@ -512,6 +537,11 @@ void BlenderDisplayDriver::update_end()
    * On some older GPUs on macOS, there is a driver crash when updating the texture for viewport
    * renders while Blender is drawing. As a workaround update texture during draw, under assumption
    * that there is no graphics interop on macOS and viewport render has a single tile. */
+#ifdef __EMSCRIPTEN__
+  /* Web: upload happens in draw() on the main thread (same path as the macOS workaround). */
+  tiles_->current_tile.need_update_texture_pixels = true;
+  web_lock_.unlock();
+#else
   if (!background_ && blender::GPU_type_matches_ex(blender::GPU_DEVICE_NVIDIA,
                                                    blender::GPU_OS_MAC,
                                                    blender::GPU_DRIVER_ANY,
@@ -529,6 +559,7 @@ void BlenderDisplayDriver::update_end()
   blender::GPU_flush();
 
   gpu_context_disable();
+#endif
 
   {
     const thread_scoped_lock lock(has_update_mutex_);
@@ -745,6 +776,9 @@ void BlenderDisplayDriver::flush()
    * If we don't do this, the NVIDIA driver hangs for a few seconds for when ending 3D viewport
    * rendering, for unknown reasons. This was found with NVIDIA driver version 470.73 and a Quadro
    * RTX 6000 on Linux. */
+#ifdef __EMSCRIPTEN__
+  return; /* Web: no GPU work on the session thread. */
+#endif
   if (!gpu_context_enable()) {
     return;
   }
@@ -780,6 +814,23 @@ void BlenderDisplayDriver::draw(const Params &params)
     return;
   }
 
+#ifdef __EMSCRIPTEN__
+  const std::lock_guard<std::mutex> web_guard(web_lock_);
+  {
+    DisplayGPUTexture &tex = tiles_->current_tile.tile.texture;
+    if (tiles_->current_tile.need_update_texture_pixels && tex.pending_width > 0) {
+      if (!tex.gpu_resources_ensure(tex.pending_width, tex.pending_height)) {
+        gpu_context_unlock();
+        return;
+      }
+    }
+    else if (!tex.gpu_texture) {
+      /* Nothing uploaded yet. */
+      gpu_context_unlock();
+      return;
+    }
+  }
+#endif
   blender::GPU_fence_wait(gpu_upload_sync_);
   blender::GPU_blend(blender::GPU_BLEND_ALPHA_PREMULT);
 
