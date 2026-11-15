@@ -160,8 +160,9 @@ def show_preview_denoise_active(context):
     if cscene.preview_denoiser == 'OPTIX':
         return has_optixdenoiser_gpu_devices(context)
 
-    # OIDN is always available, thanks to CPU support
-    return True
+    # OIDN is always available, thanks to CPU support (except the web build, which has none)
+    import _cycles
+    return getattr(_cycles, 'with_openimagedenoise', True)
 
 
 def show_denoise_active(context):
@@ -172,8 +173,9 @@ def show_denoise_active(context):
     if cscene.denoiser == 'OPTIX':
         return has_optixdenoiser_gpu_devices(context)
 
-    # OIDN is always available, thanks to CPU support
-    return True
+    # OIDN is always available, thanks to CPU support (except the web build, which has none)
+    import _cycles
+    return getattr(_cycles, 'with_openimagedenoise', True)
 
 
 def show_preview_dlss_active(context):
