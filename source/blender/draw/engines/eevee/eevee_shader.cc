@@ -262,7 +262,7 @@ ShaderGroups ShaderModule::static_shaders_load(const ShaderGroups request_bits,
     const eShaderType shader_list[] = {SHADOW_TILEMAP_TAG_USAGE_VOLUME,
                                        VOLUME_INTEGRATION,
                                        VOLUME_OCCUPANCY_CONVERT,
-                                       VOLUME_RESOLVE,
+                                       no_dual_source_blending() ? VOLUME_RESOLVE_NODUAL : VOLUME_RESOLVE,
                                        VOLUME_SCATTER,
                                        VOLUME_SCATTER_WITH_LIGHTS};
     request(VOLUME_EVAL_SHADERS, AS_SPAN(shader_list));
@@ -560,6 +560,8 @@ const char *ShaderModule::static_shader_create_info_name_get(eShaderType shader_
       return "eevee_surfel_ray";
     case TRANSPARENCY_RESOLVE:
       return "eevee_forward_resolve";
+    case TRANSPARENCY_RESOLVE_NODUAL:
+      return "eevee_forward_resolve_nodual";
     case VERTEX_COPY:
       return "eevee_vertex_copy";
     case VOLUME_INTEGRATION:
@@ -568,6 +570,8 @@ const char *ShaderModule::static_shader_create_info_name_get(eShaderType shader_
       return "eevee_volume_occupancy_convert";
     case VOLUME_RESOLVE:
       return "eevee_volume_resolve";
+    case VOLUME_RESOLVE_NODUAL:
+      return "eevee_volume_resolve_nodual";
     case VOLUME_SCATTER:
       return "eevee_volume_scatter";
     case VOLUME_SCATTER_WITH_LIGHTS:

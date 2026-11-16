@@ -470,10 +470,13 @@ void ForwardPipeline::sync()
     sub.bind_resources(inst_.planar_probes);
   }
   {
-    gpu::Shader *sh = inst_.shaders.static_shader_get(TRANSPARENCY_RESOLVE);
+    const bool no_dual = no_dual_source_blending();
+    gpu::Shader *sh = inst_.shaders.static_shader_get(no_dual ? TRANSPARENCY_RESOLVE_NODUAL :
+                                                                TRANSPARENCY_RESOLVE);
 
     resolve_ps_.init();
-    resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_CUSTOM);
+    resolve_ps_.state_set(DRW_STATE_WRITE_COLOR |
+                          (no_dual ? DRW_STATE_BLEND_MUL : DRW_STATE_BLEND_CUSTOM));
     resolve_ps_.shader_set(sh);
     resolve_ps_.bind_texture("transparency_r_tx", &transp_buffer_.r_channel_tx);
     resolve_ps_.bind_texture("transparency_g_tx", &transp_buffer_.g_channel_tx);
@@ -482,6 +485,13 @@ void ForwardPipeline::sync()
     resolve_ps_.bind_image("rp_color_img", &inst_.render_buffers.rp_color_tx);
     resolve_ps_.bind_image("rp_value_img", &inst_.render_buffers.rp_value_tx);
     resolve_ps_.bind_resources(inst_.uniform_data);
+    if (no_dual) {
+      /* `dst *= transmittance`, then `dst += radiance`. */
+      resolve_ps_.push_constant("reveal_pass", 1);
+      resolve_ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
+      resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ADD_FULL);
+      resolve_ps_.push_constant("reveal_pass", 0);
+    }
     resolve_ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
   }
 }

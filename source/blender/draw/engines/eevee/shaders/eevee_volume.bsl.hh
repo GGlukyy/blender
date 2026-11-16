@@ -435,6 +435,41 @@ void resolve_frag([[resource_table]] const Uniform &uni,
       int2(frag_co.xy), uni.uniform_buf.render_pass.volume_light_id, float4(vol.scattering, 1.0f));
 }
 
+/* Web (Safari / iPad has no dual-source blending): same resolve as two draws with plain blending.
+ * reveal_pass=1: `dst *= transmittance` (BLEND_MUL), reveal_pass=0: `dst += radiance` (BLEND_ADD_FULL). */
+struct ResolveNoDual {
+  [[push_constant]] const int reveal_pass;
+};
+
+struct FragOutNoDual {
+  [[frag_color(0)]] float4 color;
+};
+
+[[fragment]]
+void resolve_nodual_frag([[resource_table]] const Uniform &uni,
+                         [[resource_table]] const UnifiedVolumeData &volumes,
+                         [[resource_table]] RenderPassOutput &render_passes,
+                         [[resource_table]] const HiZ &hiz,
+                         [[resource_table]] const ResolveNoDual &nd,
+                         [[frag_coord]] const float4 frag_co,
+                         [[out]] FragOutNoDual &out_frag)
+{
+  float2 uvs = frag_co.xy * uni.uniform_buf.volumes.main_view_extent_inv;
+  float scene_depth = texelFetch(hiz.hiz_tx, int2(frag_co.xy), 0).r;
+
+  VolumeResolveSample vol = volumes.resolve(float3(uvs, scene_depth));
+
+  if (nd.reveal_pass != 0) {
+    out_frag.color = float4(vol.transmittance, saturate(average(vol.transmittance)));
+  }
+  else {
+    out_frag.color = float4(vol.scattering, 0.0f);
+    render_passes.store_color(int2(frag_co.xy),
+                              uni.uniform_buf.render_pass.volume_light_id,
+                              float4(vol.scattering, 1.0f));
+  }
+}
+
 PipelineCompute scatter(scatter_main,
                         ScatterConstants{.use_volume_light = false},
                         LightEvalConstants{.light_closure_count_reflect = 1,
@@ -450,4 +485,8 @@ PipelineGraphic resolve(resolve_vert,
                         resolve_frag,
                         LightEvalConstants{.light_closure_count_reflect = 1,
                                            .light_closure_count_transmit = 1});
+PipelineGraphic resolve_nodual(resolve_vert,
+                               resolve_nodual_frag,
+                               LightEvalConstants{.light_closure_count_reflect = 1,
+                                                  .light_closure_count_transmit = 1});
 }  // namespace eevee::volume

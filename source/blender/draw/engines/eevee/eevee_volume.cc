@@ -339,8 +339,9 @@ void VolumeModule::end_sync()
       math::divide_ceil(int2(data_.tex_size), int2(VOLUME_INTEGRATION_GROUP_SIZE)));
 
   resolve_ps_.init();
-  resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_CUSTOM);
-  resolve_ps_.shader_set(inst_.shaders.static_shader_get(VOLUME_RESOLVE));
+  const bool no_dual = no_dual_source_blending();
+  resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | (no_dual ? DRW_STATE_BLEND_MUL : DRW_STATE_BLEND_CUSTOM));
+  resolve_ps_.shader_set(inst_.shaders.static_shader_get(no_dual ? VOLUME_RESOLVE_NODUAL : VOLUME_RESOLVE));
   resolve_ps_.bind_resources(inst_.uniform_data);
   resolve_ps_.bind_resources(this->result);
   resolve_ps_.bind_resources(inst_.hiz_buffer.front);
@@ -348,6 +349,13 @@ void VolumeModule::end_sync()
   resolve_ps_.bind_image(RBUFS_VALUE_SLOT, &inst_.render_buffers.rp_value_tx);
   /* Sync with the integration pass. */
   resolve_ps_.barrier(GPU_BARRIER_TEXTURE_FETCH);
+  if (no_dual) {
+    /* `dst *= transmittance`, then `dst += radiance`. */
+    resolve_ps_.push_constant("reveal_pass", 1);
+    resolve_ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
+    resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ADD_FULL);
+    resolve_ps_.push_constant("reveal_pass", 0);
+  }
   resolve_ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
 }
 

@@ -25,6 +25,18 @@
 
 namespace blender::eevee {
 
+/* Web: Safari / iPad cannot create pipelines with dual-source blending (JS sets WGPU_NO_DUALSRC). Passes that use it have a
+ * two-draw variant (`dst *= a`, then `dst += b`). Same switch as gpencil_antialiasing.cc. */
+inline bool no_dual_source_blending()
+{
+#ifdef __EMSCRIPTEN__
+  static const bool value = getenv("WGPU_NO_DUALSRC") != nullptr;
+  return value;
+#else
+  return false;
+#endif
+}
+
 using StaticShader = gpu::StaticShader;
 
 /* Keep alphabetical order and clean prefix. */
@@ -161,12 +173,14 @@ enum eShaderType {
   SURFEL_RAY,
 
   TRANSPARENCY_RESOLVE,
+  TRANSPARENCY_RESOLVE_NODUAL,
 
   VERTEX_COPY,
 
   VOLUME_INTEGRATION,
   VOLUME_OCCUPANCY_CONVERT,
   VOLUME_RESOLVE,
+  VOLUME_RESOLVE_NODUAL,
   VOLUME_SCATTER,
   VOLUME_SCATTER_WITH_LIGHTS,
 

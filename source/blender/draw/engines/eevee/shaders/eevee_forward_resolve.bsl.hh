@@ -79,7 +79,57 @@ void resolve_frag([[resource_table]] const ForwardResolve &srt,
                             float4(frag_out.radiance.rgb, frag_out.transmittance.a));
 }
 
+/* Web (Safari / iPad has no dual-source blending): same resolve as two draws with plain blending.
+ * reveal_pass=1: `dst *= transmittance` (BLEND_MUL), reveal_pass=0: `dst += radiance` (BLEND_ADD_FULL). */
+struct ForwardResolveNoDual {
+  [[push_constant]] const int reveal_pass;
+};
+
+struct ForwardResolveNoDualOut {
+  [[frag_color(0)]] float4 color;
+};
+
+[[fragment]]
+void resolve_nodual_frag([[resource_table]] const ForwardResolve &srt,
+                         [[resource_table]] const ForwardResolveNoDual &nd,
+                         [[resource_table]] const eevee::Uniform &uni,
+                         [[resource_table]] RenderPassOutput &render_passes,
+                         [[frag_coord]] const float4 frag_co,
+                         [[out]] ForwardResolveNoDualOut &frag_out)
+{
+  int2 texel = int2(frag_co.xy);
+  float4 radiance, transmittance;
+
+  if (uni.pipeline_buf.use_monochromatic_transmittance) {
+    float4 data = texelFetch(srt.transparency_r_tx, texel, 0);
+    radiance = float4(data.rgb, 0.0f);
+    transmittance = data.aaaa;
+  }
+  else {
+    float2 channel_r = texelFetch(srt.transparency_r_tx, texel, 0).xy;
+    float2 channel_g = texelFetch(srt.transparency_g_tx, texel, 0).xy;
+    float2 channel_b = texelFetch(srt.transparency_b_tx, texel, 0).xy;
+    float2 channel_a = texelFetch(srt.transparency_a_tx, texel, 0).xy;
+    transmittance = float4(channel_r.y, channel_g.y, channel_b.y, channel_a.y);
+    radiance = float4(channel_r.x, channel_g.x, channel_b.x, channel_a.x);
+  }
+
+  const float half_max = 65504.0f;
+  radiance = min(radiance, half_max);
+
+  if (nd.reveal_pass != 0) {
+    frag_out.color = transmittance;
+  }
+  else {
+    frag_out.color = radiance;
+    render_passes.store_color(
+        texel, uni.uniform_buf.render_pass.transparent_id, float4(radiance.rgb, transmittance.a));
+  }
+}
+
 }  // namespace eevee::forward
 
 PipelineGraphic eevee_forward_resolve(eevee::forward::fullscreen_vert,
                                       eevee::forward::resolve_frag);
+PipelineGraphic eevee_forward_resolve_nodual(eevee::forward::fullscreen_vert,
+                                             eevee::forward::resolve_nodual_frag);
