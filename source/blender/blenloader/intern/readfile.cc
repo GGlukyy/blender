@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstdarg> /* for va_start/end. */
+#include <unordered_map>
 #include <cstddef> /* for offsetof. */
 #include <cstdlib> /* for atoi. */
 #include <cstring>
@@ -607,6 +608,39 @@ void blo_readfile_invalidate(FileData *fd, Main *bmain, const char *message)
 /** \name File Parsing
  * \{ */
 
+/**
+ * 32-bit (wasm32) build reading a 64-bit file: every distinct non-null 64-bit address (block
+ * addresses and all pointers inside the data) gets a unique 32-bit key. The old plain truncation
+ * `(addr >> 3) & 0xffffffff` collided for big files (Blender >= 5.1 writes hashed "stable"
+ * addresses), silently resolving pointers to the wrong block. Keys are 16-aligned like real
+ * pointers and deterministic. Null stays null.
+ */
+struct BloPtrIntern {
+  std::unordered_map<uint64_t, uint32_t> map;
+  uint32_t next = 0;
+};
+
+static uint32_t blo_ptr_intern(FileData *fd, const uint64_t address)
+{
+  if (address == 0) {
+    return 0;
+  }
+  BloPtrIntern &in = *fd->ptr_intern;
+  const auto it = in.map.find(address);
+  if (it != in.map.end()) {
+    return it->second;
+  }
+  /* 2^28 distinct addresses are far beyond what fits in wasm32 memory anyway. */
+  const uint32_t key = ++in.next << 4;
+  in.map.emplace(address, key);
+  return key;
+}
+
+static uint32_t blo_ptr_intern_cb(void *user, const uint64_t address)
+{
+  return blo_ptr_intern(static_cast<FileData *>(user), address);
+}
+
 static BHeadN *get_bhead(FileData *fd)
 {
   BHeadN *new_bhead = nullptr;
@@ -625,6 +659,10 @@ static BHeadN *get_bhead(FileData *fd)
       }
       else {
         bhead = &bhead_opt.value();
+        if (fd->ptr_intern) {
+          bhead->old = reinterpret_cast<const void *>(
+              uintptr_t(blo_ptr_intern(fd, BLO_bhead_last_raw_old())));
+        }
       }
 
       /* bhead now contains the (converted) bhead structure. Now read
@@ -870,7 +908,10 @@ AssetMetaData *blo_bhead_id_asset_data_address(const FileData *fd, const BHead *
   if (file_pointer_size == 8) {
     uint64_t v;
     memcpy(&v, field, sizeof(v));
-    old = (sizeof(void *) == 4) ? uintptr_t(uint32_t(v >> 3)) : uintptr_t(v);
+    old = (sizeof(void *) == 4) ?
+              (fd->ptr_intern ? uintptr_t(blo_ptr_intern(const_cast<FileData *>(fd), v)) :
+                                uintptr_t(uint32_t(v >> 3))) :
+              uintptr_t(v);
   }
   else {
     uint32_t v;
@@ -967,6 +1008,9 @@ static bool read_file_dna(FileData *fd, const char **r_error_message)
         fd->compflags = DNA_struct_get_compareflags(fd->filesdna.get(), fd->memsdna);
         fd->reconstruct_info = DNA_reconstruct_info_create(
             fd->filesdna.get(), fd->memsdna, fd->compflags);
+        if (fd->ptr_intern) {
+          DNA_reconstruct_info_set_ptr64_remap(fd->reconstruct_info, blo_ptr_intern_cb, fd);
+        }
         /* used to retrieve ID names from (bhead+1) */
         fd->id_name_offset = DNA_struct_member_offset_by_name_with_alias(
             fd->filesdna.get(), "ID", "char", "name[]");
@@ -1288,6 +1332,9 @@ static bool blo_check_pointer_truncation(FileData *fd, ReportList *reports)
   if constexpr (sizeof(void *) != 4) {
     return true;
   }
+  if (fd->ptr_intern) {
+    return true; /* Addresses are interned: no collisions possible. */
+  }
   /* Convert (and thereby check) every block address of the file. */
   for (BHead *bhead = blo_bhead_first(fd); bhead; bhead = blo_bhead_next(fd, bhead)) {
     if (bhead->code == BLO_CODE_ENDB) {
@@ -1314,6 +1361,11 @@ static FileData *blo_decode_and_check(FileData *fd, ReportList *reports)
     BLO_bhead_truncation_check_begin();
   }
   read_blender_header(fd);
+  if constexpr (sizeof(void *) == 4) {
+    if (fd->blender_header.bhead_type() != BHeadType::BHead4) {
+      fd->ptr_intern = MEM_new<BloPtrIntern>(__func__);
+    }
+  }
 
   if (fd->flags & FD_FLAGS_SWITCH_ENDIAN) {
     BLI_STATIC_ASSERT(ENDIAN_ORDER == L_ENDIAN, "Blender only builds on little endian systems")
@@ -1489,6 +1541,7 @@ void blo_filedata_free(FileData *fd)
   if (fd->reconstruct_info) {
     DNA_reconstruct_info_free(fd->reconstruct_info);
   }
+  MEM_delete(fd->ptr_intern);
 
   if (fd->datamap) {
     oldnewmap_free(fd->datamap);
@@ -6754,7 +6807,8 @@ static void convert_pointer_array_64_to_32(BlendDataReader *reader,
   BLI_assert((reader->fd->flags & FD_FLAGS_SWITCH_ENDIAN) == 0);
   UNUSED_VARS_NDEBUG(reader);
   for (int i = 0; i < array_size; i++) {
-    dst[i] = uint32_from_uint64_ptr(src[i]);
+    dst[i] = reader->fd->ptr_intern ? blo_ptr_intern(reader->fd, src[i]) :
+                                      uint32_from_uint64_ptr(src[i]);
   }
 }
 

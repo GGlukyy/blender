@@ -121,6 +121,13 @@ enum {
 void BLO_bhead_truncation_check_begin();
 int64_t BLO_bhead_truncation_check_end();
 
+/**
+ * Raw 64-bit `old` address of the BHead returned by the last #BLO_readfile_read_bhead on this
+ * thread (32-bit builds reading 64-bit files only; otherwise unspecified). Used to intern the
+ * address when the plain truncation would collide.
+ */
+uint64_t BLO_bhead_last_raw_old();
+
 std::optional<BHead> BLO_readfile_read_bhead(FileReader *file, BHeadType type);
 
 /**

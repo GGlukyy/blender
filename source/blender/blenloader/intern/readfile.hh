@@ -79,6 +79,9 @@ ENUM_OPERATORS(eFileDataFlag)
  * Note that this data (and its accesses) are absolutely not thread-safe currently. It should never
  * be accessed concurrently.
  */
+/** wasm32 reading 64-bit files: address -> unique 32-bit key map (see `blo_ptr_intern`). */
+struct BloPtrIntern;
+
 struct FileData {
   /** Linked list of BHeadN's. */
   ListBaseT<BHeadN> bhead_list = {};
@@ -113,6 +116,8 @@ struct FileData {
   /** Array of #eSDNA_StructCompare. */
   const char *compflags = nullptr;
   DNA_ReconstructInfo *reconstruct_info = nullptr;
+  /** Only set when a 32-bit build reads a 64-bit file. */
+  BloPtrIntern *ptr_intern = nullptr;
 
   int fileversion = 0;
   /**

@@ -89,6 +89,13 @@ struct DNA_ReconstructInfo *DNA_reconstruct_info_create(const struct SDNA *oldsd
                                                         const struct SDNA *newsdna,
                                                         const char *compare_flags);
 void DNA_reconstruct_info_free(struct DNA_ReconstructInfo *reconstruct_info);
+/**
+ * 32-bit builds reading 64-bit files: replace the default `address >> 3` pointer shrinking by `fn`
+ * (e.g. an interning map that guarantees unique keys). `fn == nullptr` restores the default.
+ */
+void DNA_reconstruct_info_set_ptr64_remap(struct DNA_ReconstructInfo *reconstruct_info,
+                                          uint32_t (*fn)(void *user, uint64_t address),
+                                          void *user);
 
 /**
  * \param struct_index_last: Support faster lookups when there is the possibility

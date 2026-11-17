@@ -1299,6 +1299,10 @@ struct DNA_ReconstructInfo {
 
   int *step_counts;
   ReconstructStep **steps;
+
+  /** Optional pointer shrinking (64 -> 32 bit), see #DNA_reconstruct_info_set_ptr64_remap. */
+  uint32_t (*ptr64_remap)(void *user, uint64_t address);
+  void *ptr64_remap_user;
 };
 
 static void reconstruct_structs(const DNA_ReconstructInfo *reconstruct_info,
@@ -1342,6 +1346,16 @@ static void reconstruct_struct(const DNA_ReconstructInfo *reconstruct_info,
                             new_block + step->data.cast_primitive.new_offset);
         break;
       case RECONSTRUCT_STEP_CAST_POINTER_TO_32:
+        if (reconstruct_info->ptr64_remap) {
+          const uint64_t *src = reinterpret_cast<const uint64_t *>(
+              old_block + step->data.cast_pointer.old_offset);
+          uint32_t *dst = reinterpret_cast<uint32_t *>(new_block +
+                                                       step->data.cast_pointer.new_offset);
+          for (int a = 0; a < step->data.cast_pointer.array_len; a++) {
+            dst[a] = reconstruct_info->ptr64_remap(reconstruct_info->ptr64_remap_user, src[a]);
+          }
+          break;
+        }
         cast_pointer_64_to_32(
             step->data.cast_pointer.array_len,
             reinterpret_cast<const uint64_t *>(old_block + step->data.cast_pointer.old_offset),
@@ -1756,6 +1770,14 @@ DNA_ReconstructInfo *DNA_reconstruct_info_create(const SDNA *oldsdna,
   }
 
   return reconstruct_info;
+}
+
+void DNA_reconstruct_info_set_ptr64_remap(DNA_ReconstructInfo *reconstruct_info,
+                                          uint32_t (*fn)(void *user, uint64_t address),
+                                          void *user)
+{
+  reconstruct_info->ptr64_remap = fn;
+  reconstruct_info->ptr64_remap_user = user;
 }
 
 void DNA_reconstruct_info_free(DNA_ReconstructInfo *reconstruct_info)

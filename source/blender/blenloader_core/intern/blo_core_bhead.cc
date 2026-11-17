@@ -25,6 +25,13 @@ static BHead bhead_from_bhead4(const BHead4 &bhead4)
  * #BLO_bhead_truncation_check_begin. Only the thread opening the file touches this. */
 static thread_local std::unordered_map<uint32_t, uint64_t> *g_trunc_seen = nullptr;
 static thread_local int64_t g_trunc_collisions = 0;
+/* Raw 64-bit `old` of the BHead parsed last on this thread (for per-file interning, see #BLO_bhead_last_raw_old). */
+static thread_local uint64_t g_last_raw_old = 0;
+
+uint64_t BLO_bhead_last_raw_old()
+{
+  return g_last_raw_old;
+}
 
 void BLO_bhead_truncation_check_begin()
 {
@@ -46,6 +53,7 @@ static const void *old_ptr_from_uint64_ptr(const uint64_t ptr)
     return reinterpret_cast<const void *>(ptr);
   }
   else {
+    g_last_raw_old = ptr;
     const uint32_t key = uint32_from_uint64_ptr(ptr);
     if (g_trunc_seen && ptr != 0) {
       /* Same raw address twice is legitimate; DIFFERENT raw addresses with the same key are the
