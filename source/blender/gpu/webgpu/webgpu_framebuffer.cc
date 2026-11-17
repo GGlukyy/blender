@@ -60,7 +60,19 @@ void WebGPUFrameBuffer::bind(bool enabled_srgb)
     scissor_reset();
     dirty_attachments_ = false;
   }
-  Shader::set_framebuffer_srgb_target(enabled_srgb);
+  /* Like GL/Vulkan (`enabled_srgb && srgb_`): the shader-side sRGB->linear counter-conversion
+   * (ColorSpace::rec709_srgb_to_output_space) is only wanted when the hardware re-encodes, i.e. an
+   * sRGB attachment is bound. For float/UNORM targets (Cycles viewport draw into the half-float
+   * viewport buffer) it darkened everything: Cycles Rendered looked black. */
+  bool has_srgb_attachment = false;
+  for (int i = 0; i < GPU_FB_MAX_COLOR_ATTACHMENT; i++) {
+    gpu::Texture *t = color_tex(i);
+    if (t && t->format_get() == TextureFormat::SRGBA_8_8_8_8) {
+      has_srgb_attachment = true;
+      break;
+    }
+  }
+  Shader::set_framebuffer_srgb_target(enabled_srgb && has_srgb_attachment);
 }
 
 bool WebGPUFrameBuffer::check(char /*err_out*/[256])
