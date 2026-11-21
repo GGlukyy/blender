@@ -31,6 +31,8 @@ class WebGPUFrameBuffer : public FrameBuffer {
   double4 clear_color_[GPU_FB_MAX_COLOR_ATTACHMENT] = {};
   bool depth_clear_pending_ = false;
   float clear_depth_ = 1.0f;
+  bool stencil_clear_pending_ = false;
+  uint clear_stencil_ = 0;
 
   /* Attachment-less rendering (EEVEE shadow atlas / tag passes write only via
    * imageStore): WebGPU requires >= 1 attachment, so a dummy R8Unorm color
