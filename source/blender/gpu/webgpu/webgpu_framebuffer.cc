@@ -43,7 +43,14 @@ void WebGPUFrameBuffer::bind(bool enabled_srgb)
   for (int i = 0; i < GPU_FB_MAX_ATTACHMENT; i++) {
     if (attachments_[i].tex) {
       gpu::Texture *t = attachments_[i].tex;
-      size_set(t->width_get(), std::max(t->height_get(), 1));
+      /* Size of the attached MIP level (GL: GPU_texture_get_mipmap_size). Workbench DoF renders into
+       * mips 1/2 of a half-res target: a viewport sized for mip 0 is out of bounds there and
+       * WebGPU drops the whole pass (H45). */
+      int msize[3] = {t->width_get(), std::max(t->height_get(), 1), 1};
+      if (attachments_[i].mip > 0) {
+        GPU_texture_get_mipmap_size(t, attachments_[i].mip, msize);
+      }
+      size_set(msize[0], std::max(msize[1], 1));
       break;
     }
   }

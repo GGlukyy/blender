@@ -208,13 +208,27 @@ void DofPass::sync(SceneResources &resources, const DRWContext *draw_ctx)
   blur2_ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
 
   resolve_ps_.init();
-  resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_CUSTOM);
-  resolve_ps_.shader_set(ShaderCache::get().dof_resolve.get());
+#ifdef __EMSCRIPTEN__
+  /* Safari / iPad: no dual-source blending (JS sets WGPU_NO_DUALSRC), see eevee `no_dual_source_blending()`. */
+  static const bool no_dual = getenv("WGPU_NO_DUALSRC") != nullptr;
+#else
+  const bool no_dual = false;
+#endif
+  resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | (no_dual ? DRW_STATE_BLEND_MUL : DRW_STATE_BLEND_CUSTOM));
+  resolve_ps_.shader_set(no_dual ? ShaderCache::get().dof_resolve_nodual.get() :
+                                   ShaderCache::get().dof_resolve.get());
   resolve_ps_.bind_texture("half_res_color_tx", &source_tx_, sampler_state);
   resolve_ps_.bind_texture("scene_depth_tx", &resources.depth_tx);
   resolve_ps_.push_constant("inverted_viewport_size", viewport_size_inv);
   resolve_ps_.push_constant("dof_params", float3(aperture_size_, distance_, invsensor_size_));
   resolve_ps_.push_constant("near_far", float2(near_, far_));
+  if (no_dual) {
+    /* `dst *= (1 - blend)`, then `dst += color * blend`. */
+    resolve_ps_.push_constant("reveal_pass", 1);
+    resolve_ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
+    resolve_ps_.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ADD_FULL);
+    resolve_ps_.push_constant("reveal_pass", 0);
+  }
   resolve_ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
 }
 

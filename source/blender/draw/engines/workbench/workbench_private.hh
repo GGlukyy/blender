@@ -104,6 +104,7 @@ class ShaderCache {
   StaticShader dof_blur1 = {"workbench_effect_dof_blur1"};
   StaticShader dof_blur2 = {"workbench_effect_dof_blur2"};
   StaticShader dof_resolve = {"workbench_effect_dof_resolve"};
+  StaticShader dof_resolve_nodual = {"workbench_effect_dof_resolve_nodual"};
 
   /* AA */
   StaticShader taa_accumulation = {"workbench_taa"};

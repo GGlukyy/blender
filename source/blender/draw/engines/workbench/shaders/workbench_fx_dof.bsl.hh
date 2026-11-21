@@ -399,6 +399,42 @@ struct ResolveOut {
   out.color_mul = float4(1.0f - blend);
 }
 
+/* Web (Safari / iPad has no dual-source blending): same resolve as two draws with plain blending.
+ * reveal_pass=1: `dst *= (1 - blend)` (BLEND_MUL), reveal_pass=0: `dst += color * blend` (BLEND_ADD_FULL). */
+struct ResolveNoDual {
+  [[push_constant]] const int reveal_pass;
+};
+
+struct ResolveNoDualOut {
+  [[frag_color(0)]] float4 color;
+};
+
+[[fragment]] void resolve_nodual([[resource_table]] DepthOfField &dof,
+                                 [[resource_table]] Resolve &srt,
+                                 [[resource_table]] draw::View &views,
+                                 [[resource_table]] ResolveNoDual &nd,
+                                 [[out]] ResolveNoDualOut &out,
+                                 [[frag_coord]] const float4 frag_co)
+{
+  /* Full-screen pass. */
+  float2 pixel_size = 0.5f / float2(textureSize(srt.half_res_color_tx, 0).xy);
+  float2 uv = frag_co.xy * pixel_size;
+
+  ViewMatrices view = views.get(0);
+
+  float depth = texelFetch(srt.scene_depth_tx, int2(frag_co.xy), 0).r;
+  float zdepth = view.depth_screen_to_view(depth);
+  float coc = dof.calculate_coc(zdepth);
+
+  float blend = smoothstep(1.0f, 3.0f, abs(coc));
+  if (nd.reveal_pass != 0) {
+    out.color = float4(1.0f - blend);
+  }
+  else {
+    out.color = texture(srt.half_res_color_tx, uv) * blend;
+  }
+}
+
 }  // namespace workbench::dof
 
 PipelineGraphic workbench_effect_dof_prepare(workbench::dof::vert, workbench::dof::prepare);
@@ -406,3 +442,4 @@ PipelineGraphic workbench_effect_dof_downsample(workbench::dof::vert, workbench:
 PipelineGraphic workbench_effect_dof_blur1(workbench::dof::vert, workbench::dof::blur1);
 PipelineGraphic workbench_effect_dof_blur2(workbench::dof::vert, workbench::dof::blur2);
 PipelineGraphic workbench_effect_dof_resolve(workbench::dof::vert, workbench::dof::resolve);
+PipelineGraphic workbench_effect_dof_resolve_nodual(workbench::dof::vert, workbench::dof::resolve_nodual);
