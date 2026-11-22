@@ -1164,8 +1164,19 @@ bool RE_engine_render(Render *re, bool do_all)
 
 #ifdef WITH_FREESTYLE
   if (re->r.mode & R_EDGE_FRS) {
+#  ifdef __EMSCRIPTEN__
+    /* Web: Freestyle needs two GPU film readbacks (scene + strokes) and composites them on the
+     * CPU, but the film only reaches the CPU asynchronously after the render. The strokes would
+     * be composited onto empty pixels and then overwritten, so skip them and say so. */
+    if (re->reports) {
+      BKE_report(re->reports,
+                 RPT_WARNING,
+                 "Freestyle is not supported in the web build, rendered without it");
+    }
+#  else
     CLOG_INFO(&LOG, "Rendering freestyle");
     RE_RenderFreestyleExternal(re);
+#  endif
   }
 #endif
 
