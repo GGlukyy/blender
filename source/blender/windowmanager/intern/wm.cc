@@ -650,6 +650,7 @@ bool wgpu_film_capture_pending();
 bool wgpu_film_capture_failed_take();
 }
 void RE_web_flush_pending_write(Main *bmain_now, bool pixels_ok);
+void RE_web_run_pending_compositor(Main *bmain_now, bool pixels_ok);
 void ED_render_web_anim_tick(bContext *C);
 
 static void wm_step_apply_film_result(bContext *C)
@@ -658,6 +659,7 @@ static void wm_step_apply_film_result(bContext *C)
   int w = 0, h = 0;
   if (!gpu::wgpu_film_result_take(pixels, w, h)) {
     if (!gpu::wgpu_film_capture_pending() && gpu::wgpu_film_capture_failed_take()) {
+      RE_web_run_pending_compositor(CTX_data_main(C), false);
       RE_web_flush_pending_write(CTX_data_main(C), false);
     }
     return;
@@ -738,6 +740,8 @@ static void wm_step_apply_film_result(bContext *C)
   if (rr) {
     RE_ReleaseResult(re);
   }
+  /* The compositor needs the injected Combined pass; it replaces the view image buffer. */
+  RE_web_run_pending_compositor(CTX_data_main(C), injected);
   if (injected) {
     /* Drop every cached/display buffer of the viewer image so the editor
      * re-acquires from the (now filled) RenderResult. */

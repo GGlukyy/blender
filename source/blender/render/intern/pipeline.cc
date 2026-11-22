@@ -187,6 +187,13 @@ static struct {
   bool active;
   char filepath[FILE_MAX];
 } g_web_pending_write = {};
+/* Compositor postponed the same way: it needs the real Combined pixels, so it runs from
+ * RE_web_run_pending_compositor() after the readback was injected. The pipeline depsgraph and
+ * compositor stay alive until then (render_pipeline_free skips them). */
+static struct {
+  Render *re;
+  bool active;
+} g_web_pending_compo = {};
 /* Set by the web animation stepper: name written files like RE_RenderAnim (frame number). */
 static bool g_web_write_frame_numbers = false;
 #endif
@@ -1311,6 +1318,32 @@ static bool scene_has_any_compositor_output(const Scene &scene)
   return scene_has_compositor_file_output(scene);
 }
 
+static void run_compositor(Render *re)
+{
+  compositor::SideEffectOutputTypes needed_side_effects_outputs =
+      compositor::SideEffectOutputTypes::FileOutputNode;
+
+  CLOG_STR_INFO(&LOG, "Executing compositor");
+
+  re->i.infostr = IFACE_("Compositing");
+  re->display->stats_draw(&re->i);
+  re->i.infostr = nullptr;
+
+  compositor::RenderContext compositor_render_context;
+  compositor_render_context.is_animation_render = re->flag & R_ANIMATION;
+  for (RenderView &rv : re->result->views) {
+    RE_compositor_execute(render::CompositorInputData(*re,
+                                                      *re->main,
+                                                      *re->pipeline_scene_eval,
+                                                      re->r,
+                                                      rv.name,
+                                                      &compositor_render_context,
+                                                      needed_side_effects_outputs,
+                                                      false));
+  }
+  compositor_render_context.save_file_outputs(re->pipeline_scene_eval);
+}
+
 /* Render compositor nodes, along with any scenes required for them.
  * The result will be output into a compositing render layer in the render result. */
 static void do_render_compositor(Render *re)
@@ -1365,13 +1398,21 @@ static void do_render_compositor(Render *re)
 
   bool web_skip_compositor = false;
 #ifdef __EMSCRIPTEN__
-  /* Web: the render film reaches the CPU only asynchronously, so the compositor would run on an
-   * empty input (GPU device: the result is all zeros and replaces the real image). Skip it and
-   * keep the plain render. */
+  /* Web: the render film reaches the CPU only asynchronously (the GPU device would read zeros),
+   * so the compositor must not run on the empty input. Single-scene still renders defer it until
+   * the readback is injected (RE_web_run_pending_compositor); others keep the plain render. */
   if (bke::compositor::is_enabled(*re->pipeline_scene_eval,
                                   bke::compositor::ExecutionMode::Render))
   {
-    if (re->reports) {
+    if (gpu::wgpu_film_capture_pending() && !(re->flag & R_ANIMATION) &&
+        !g_web_write_frame_numbers &&
+        (needed_scenes_to_render.size() == 0 ||
+         (needed_scenes_to_render.size() == 1 &&
+          needed_scenes_to_render.contains(re->pipeline_scene_eval))))
+    {
+      g_web_pending_compo = {re, true};
+    }
+    else if (re->reports) {
       BKE_report(re->reports,
                  RPT_WARNING,
                  "Compositing is not supported in the web build, rendered without it");
@@ -1395,28 +1436,7 @@ static void do_render_compositor(Render *re)
           /* If we have consistent depsgraph now would be a time to update them. */
         }
 
-        compositor::SideEffectOutputTypes needed_side_effects_outputs =
-            compositor::SideEffectOutputTypes::FileOutputNode;
-
-        CLOG_STR_INFO(&LOG, "Executing compositor");
-
-        re->i.infostr = IFACE_("Compositing");
-        re->display->stats_draw(&re->i);
-        re->i.infostr = nullptr;
-
-        compositor::RenderContext compositor_render_context;
-        compositor_render_context.is_animation_render = re->flag & R_ANIMATION;
-        for (RenderView &rv : re->result->views) {
-          RE_compositor_execute(render::CompositorInputData(*re,
-                                                            *re->main,
-                                                            *re->pipeline_scene_eval,
-                                                            re->r,
-                                                            rv.name,
-                                                            &compositor_render_context,
-                                                            needed_side_effects_outputs,
-                                                            false));
-        }
-        compositor_render_context.save_file_outputs(re->pipeline_scene_eval);
+        run_compositor(re);
       }
     }
   }
@@ -2025,6 +2045,13 @@ static void render_pipeline_free(Render *re)
     re->engine = nullptr;
   }
 
+#ifdef __EMSCRIPTEN__
+  if (g_web_pending_compo.active && g_web_pending_compo.re == re) {
+    /* Compositor and depsgraph live on until RE_web_run_pending_compositor(). */
+    RE_display_free(re);
+    return;
+  }
+#endif
   /* Destroy compositor that was using pipeline depsgraph. */
   RE_compositor_free(*re);
 
@@ -2039,6 +2066,10 @@ static void render_pipeline_free(Render *re)
   RE_display_free(re);
 }
 
+#ifdef __EMSCRIPTEN__
+void RE_web_run_pending_compositor(Main *bmain_now, bool pixels_ok);
+#endif
+
 void RE_RenderFrame(Render *re,
                     Main *bmain,
                     Scene *scene,
@@ -2049,6 +2080,11 @@ void RE_RenderFrame(Render *re,
                     const bool write_still)
 {
   CLOG_INFO(&LOG, "Rendering frame %d", frame);
+
+#ifdef __EMSCRIPTEN__
+  /* A compositor still waiting for its film readback belongs to the previous render: drop it. */
+  RE_web_run_pending_compositor(bmain, false);
+#endif
 
   render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_INIT);
 
@@ -2425,7 +2461,26 @@ void RE_web_set_write_frame_numbers(const bool use)
 
 bool RE_web_write_busy()
 {
-  return g_web_pending_write.active || gpu::wgpu_film_capture_pending();
+  return g_web_pending_write.active || g_web_pending_compo.active ||
+         gpu::wgpu_film_capture_pending();
+}
+
+void RE_web_run_pending_compositor(Main *bmain_now, const bool pixels_ok)
+{
+  if (!g_web_pending_compo.active) {
+    return;
+  }
+  g_web_pending_compo.active = false;
+  Render *re = g_web_pending_compo.re;
+  if (pixels_ok && re->pipeline_scene_eval && re->main == bmain_now) {
+    run_compositor(re);
+  }
+  RE_compositor_free(*re);
+  if (re->pipeline_depsgraph != nullptr) {
+    DEG_graph_free(re->pipeline_depsgraph);
+    re->pipeline_depsgraph = nullptr;
+    re->pipeline_scene_eval = nullptr;
+  }
 }
 
 void RE_web_flush_pending_write(Main *bmain_now, const bool pixels_ok)

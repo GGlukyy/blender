@@ -119,6 +119,10 @@ class Context : public compositor::Context {
 
   bool use_gpu() const override
   {
+#ifdef __EMSCRIPTEN__
+    /* Web: GPU_texture_read returns zeros (asynchronous readback only), so always use the CPU. */
+    return false;
+#endif
     return gpu_supported_ &&
            this->get_render_data().compositor_device == SCE_COMPOSITOR_DEVICE_GPU;
   }
