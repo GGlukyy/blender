@@ -876,6 +876,9 @@ void WebGPUBatch::record_draw(int vertex_first,
   hash_append(key, &write_mask_bits, sizeof(write_mask_bits));
   hash_append(key, &blend, sizeof(blend));
   hash_append(key, &cull, sizeof(cull));
+  /* frontFace is part of the pipeline (negative object scale inverts facing, H51). */
+  const uint8_t invert_facing_key = gst.invert_facing ? 1 : 0;
+  hash_append(key, &invert_facing_key, sizeof(invert_facing_key));
   hash_stencil(key, stencil);
   for (const WGPUVertexBufferLayout &l : vb_layouts) {
     hash_append(key, &l.arrayStride, sizeof(l.arrayStride));
@@ -1599,6 +1602,9 @@ void webgpu_immediate_draw(GPUPrimType prim_type,
   hash_append(key, &write_mask_bits, sizeof(write_mask_bits));
   hash_append(key, &blend, sizeof(blend));
   hash_append(key, &cull, sizeof(cull));
+  /* frontFace is part of the pipeline (negative object scale inverts facing, H51). */
+  const uint8_t invert_facing_key = gst.invert_facing ? 1 : 0;
+  hash_append(key, &invert_facing_key, sizeof(invert_facing_key));
   hash_stencil(key, stencil);
   for (uint32_t li = 0; li < layout_count; li++) {
     hash_append(key, &layouts[li].arrayStride, sizeof(layouts[li].arrayStride));
