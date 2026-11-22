@@ -178,6 +178,7 @@ static void render_callback_exec_id(Render *re, Main *bmain, ID *id, eCbEvent ev
 #ifdef __EMSCRIPTEN__
 namespace gpu {
 bool wgpu_film_capture_pending();
+void wgpu_film_capture_arm();
 }
 /* Image write postponed until the asynchronous GPU film readback has delivered real pixels. */
 static struct {
@@ -2084,6 +2085,7 @@ void RE_RenderFrame(Render *re,
 #ifdef __EMSCRIPTEN__
   /* A compositor still waiting for its film readback belongs to the previous render: drop it. */
   RE_web_run_pending_compositor(bmain, false);
+  gpu::wgpu_film_capture_arm();
 #endif
 
   render_callback_exec_id(re, re->main, &scene->id, BKE_CB_EVT_RENDER_INIT);

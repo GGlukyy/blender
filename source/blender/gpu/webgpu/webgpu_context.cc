@@ -1009,6 +1009,16 @@ static struct {
   bool failed = false;
 } g_film_result;
 
+/* Only the first 4-channel film read after RE_RenderFrame() starts is captured: EEVEE reads the
+ * Combined pass first, then any extra passes (Z, Normal, ...). Capturing the later ones replaced
+ * the Combined image with e.g. the Normal pass. */
+static bool g_film_capture_armed = true;
+
+void wgpu_film_capture_arm()
+{
+  g_film_capture_armed = true;
+}
+
 bool wgpu_film_capture_pending()
 {
   return g_film_result.pending;
@@ -1041,6 +1051,10 @@ void WebGPUContext::film_capture_async(WGPUTexture tex, WGPUTextureFormat fmt, i
   {
     return;
   }
+  if (!g_film_capture_armed) {
+    return;
+  }
+  g_film_capture_armed = false;
   const uint32_t bpp = (fmt == WGPUTextureFormat_RGBA16Float) ? 8 : 16;
   const uint32_t bpr = align256(uint32_t(w) * bpp);
   const uint64_t size = uint64_t(bpr) * uint64_t(h);
