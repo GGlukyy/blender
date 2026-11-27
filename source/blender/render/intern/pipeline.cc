@@ -2116,8 +2116,25 @@ void RE_RenderFrame(Render *re,
     bool is_written = false;
     if (should_write && !G.is_break) {
       if (BKE_imtype_is_movie(rd.im_format.imtype)) {
-        /* operator checks this but in case its called from elsewhere */
-        printf("Error: cannot write single images with a movie format!\n");
+#ifdef __EMSCRIPTEN__
+        if (!re->movie_writers.is_empty()) {
+          /* Web animation stepper (V2): frame goes to the movie writer opened by RE_web_movie_begin. */
+          if (gpu::wgpu_film_capture_pending()) {
+            g_web_pending_write = {re, bmain, scene, true, {}};
+            g_web_pending_write.filepath[0] = '\0';
+            fprintf(stderr, "WGPU_FILM write deferred (movie)\n");
+            fflush(stderr);
+          }
+          else {
+            is_written = do_write_image_or_movie(re, bmain, scene, 1, nullptr, write_still);
+          }
+        }
+        else
+#endif
+        {
+          /* operator checks this but in case its called from elsewhere */
+          printf("Error: cannot write single images with a movie format!\n");
+        }
       }
       else {
         char filepath_override[FILE_MAX];
@@ -2501,8 +2518,13 @@ void RE_web_flush_pending_write(Main *bmain_now, const bool pixels_ok)
     fflush(stderr);
     return;
   }
-  const bool ok = do_write_image_or_movie(
-      re, bmain_now, scene, 0, g_web_pending_write.filepath, true);
+  const bool is_movie = BKE_imtype_is_movie(scene->r.im_format.imtype);
+  const bool ok = do_write_image_or_movie(re,
+                                          bmain_now,
+                                          scene,
+                                          is_movie ? 1 : 0,
+                                          is_movie ? nullptr : g_web_pending_write.filepath,
+                                          true);
   fprintf(stderr, "WGPU_FILM deferred write %s ok=%d\n", g_web_pending_write.filepath, int(ok));
   fflush(stderr);
   if (ok) {
@@ -2545,6 +2567,45 @@ static void re_movie_free_all(Render *re)
   }
   re->movie_writers.clear_and_shrink();
 }
+
+#ifdef __EMSCRIPTEN__
+static ImageFormatData g_web_movie_imf;
+static bool g_web_movie_imf_valid = false;
+
+bool RE_web_movie_begin(Render *re, Main *bmain, Scene *scene, ViewLayer *single_layer)
+{
+  RenderData rd = dna::shallow_copy(scene->r);
+  if (!render_init_from_main(re, &rd, bmain, scene, single_layer, nullptr, false, true)) {
+    return false;
+  }
+  if (g_web_movie_imf_valid) {
+    BKE_image_format_free(&g_web_movie_imf);
+  }
+  BKE_image_format_init_for_write(&g_web_movie_imf, scene, nullptr, true);
+  g_web_movie_imf_valid = true;
+  size_t width, height;
+  get_videos_dimensions(re, &rd, &g_web_movie_imf, &width, &height);
+  MovieWriter *writer = BKE_blender_project_read_callback(
+      bmain, [&](const bke::BlenderProject *project) {
+        return MOV_write_begin(
+            scene, project, &re->r, &g_web_movie_imf, width, height, re->reports, false, "");
+      });
+  if (writer == nullptr) {
+    return false;
+  }
+  re->movie_writers.append(writer);
+  return true;
+}
+
+void RE_web_movie_end(Render *re)
+{
+  re_movie_free_all(re);
+  if (g_web_movie_imf_valid) {
+    BKE_image_format_free(&g_web_movie_imf);
+    g_web_movie_imf_valid = false;
+  }
+}
+#endif
 
 static void touch_file(const char *filepath)
 {

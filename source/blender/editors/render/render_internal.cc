@@ -173,6 +173,8 @@ static void get_render_operator_frame_range(wmOperator *render_operator,
  * deferred file write has finished. Image sequences only (movie formats keep the old path). */
 bool RE_web_write_busy();
 void RE_web_set_write_frame_numbers(bool use);
+bool RE_web_movie_begin(Render *re, Main *bmain, Scene *scene, ViewLayer *single_layer);
+void RE_web_movie_end(Render *re);
 static struct {
   bool active;
   bool first;
@@ -180,14 +182,14 @@ static struct {
   Scene *scene;
   ViewLayer *single_layer;
   int cur, end, step;
+  bool is_movie;
   int cfra_old;
   float subframe_old;
 } g_web_anim = {};
 
 static bool web_anim_wanted(Scene *scene, const bool is_animation)
 {
-  return is_animation && !BKE_imtype_is_movie(scene->r.im_format.imtype) &&
-         !RE_seq_render_active(scene, &scene->r);
+  return is_animation && !RE_seq_render_active(scene, &scene->r);
 }
 
 static void web_anim_start(
@@ -201,9 +203,18 @@ static void web_anim_start(
                 sfra,
                 efra,
                 std::max<int>(scene->r.frame_step, 1),
+                BKE_imtype_is_movie(scene->r.im_format.imtype),
                 scene->r.cfra,
                 scene->r.subframe};
-  fprintf(stderr, "WGPU_FILM anim stepper start %d..%d\n", sfra, efra);
+  if (g_web_anim.is_movie) {
+    Render *re = RE_NewSceneRender(scene);
+    if (!RE_web_movie_begin(re, bmain, scene, single_layer)) {
+      fprintf(stderr, "WGPU_FILM anim stepper: cannot open movie writer\n");
+      g_web_anim.active = false;
+      return;
+    }
+  }
+  fprintf(stderr, "WGPU_FILM anim stepper start %d..%d%s\n", sfra, efra, g_web_anim.is_movie ? " movie" : "");
   fflush(stderr);
 }
 
@@ -223,6 +234,9 @@ void ED_render_web_anim_tick(bContext *C)
   }
   if (G.is_break || g_web_anim.cur > g_web_anim.end) {
     g_web_anim.active = false;
+    if (g_web_anim.is_movie) {
+      RE_web_movie_end(RE_NewSceneRender(scene));
+    }
     scene->r.cfra = g_web_anim.cfra_old;
     scene->r.subframe = g_web_anim.subframe_old;
     ED_update_for_newframe(bmain, CTX_data_depsgraph_pointer(C));
