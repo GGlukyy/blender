@@ -690,6 +690,31 @@ static void wm_step_apply_film_result(bContext *C)
   }
   RenderResult *rr = RE_AcquireResultWrite(re);
   bool injected = false;
+  /* V2e: Render Border without Crop. The film holds only the border region, the RenderResult was
+   * already "uncropped" to the full frame (render_result_uncrop) → place the film at the border
+   * offset (same rounding as the pipeline's disprect), zeros outside, like desktop. */
+  if (rr && (rr->rectx != w || rr->recty != h) && (scene->r.mode & R_BORDER) &&
+      !(scene->r.mode & R_CROP))
+  {
+    const int xmin = int(scene->r.border.xmin * rr->rectx);
+    const int ymin = int(scene->r.border.ymin * rr->recty);
+    if (w < rr->rectx || h < rr->recty) {
+      if (xmin >= 0 && ymin >= 0 && xmin + w <= rr->rectx && ymin + h <= rr->recty) {
+        std::vector<float> full(size_t(4) * rr->rectx * rr->recty, 0.0f);
+        for (int y = 0; y < h; y++) {
+          memcpy(&full[(size_t(ymin + y) * rr->rectx + xmin) * 4],
+                 &pixels[size_t(y) * w * 4],
+                 sizeof(float) * 4 * w);
+        }
+        fprintf(stderr,
+                "WGPU_FILM border %dx%d placed at %d,%d in %dx%d\n",
+                w, h, xmin, ymin, rr->rectx, rr->recty);
+        pixels.swap(full);
+        w = rr->rectx;
+        h = rr->recty;
+      }
+    }
+  }
   if (rr == nullptr) {
     fprintf(stderr, "WGPU_FILM inject: no RenderResult\n");
   }
