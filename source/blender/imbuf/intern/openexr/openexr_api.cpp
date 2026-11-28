@@ -2711,6 +2711,15 @@ void imb_initopenexr()
   /* In a multithreaded program, staticInitialize() must be called once during startup, before the
    * program accesses any other functions or classes in the IlmImf library. */
   Imf::staticInitialize();
+#ifdef __EMSCRIPTEN__
+  /* Web: every pool thread is a pthread Web Worker (own JS realm, never freed). With a thread
+   * override (iPad `-t 4`) don't start the EXR pool up front: EXR decode then runs on the calling
+   * thread (rare on the web). OIIO's EXR writer still sets its own count when it writes an EXR. */
+  if (BLI_system_num_threads_override_get()) {
+    Imf::setGlobalThreadCount(0);
+    return;
+  }
+#endif
   Imf::setGlobalThreadCount(BLI_system_thread_count());
 }
 
