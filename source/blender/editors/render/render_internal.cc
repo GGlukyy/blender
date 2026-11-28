@@ -333,6 +333,15 @@ static wmOperatorStatus screen_render_exec(bContext *C, wmOperator *op)
   ED_editors_flush_edits(mainp);
 #ifdef __EMSCRIPTEN__
   if (web_anim_wanted(scene, is_animation) && !g_web_anim.active) {
+    /* V2c: desktop reports "Cannot render, no camera" from inside RE_RenderAnim (do_render_engine);
+     * the web stepper renders frame by frame later and lost that report → check up front. */
+    if (!camera_override && !scene->camera &&
+        !BKE_scene_camera_switch_find(scene, frame_start) &&
+        !RE_seq_render_active(scene, &scene->r))
+    {
+      BKE_report(op->reports, RPT_ERROR, "Cannot render, no camera");
+      return OPERATOR_CANCELLED;
+    }
     web_anim_start(mainp, scene, single_layer, frame_start, frame_end);
     return OPERATOR_FINISHED;
   }
